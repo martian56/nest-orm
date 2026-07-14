@@ -119,6 +119,53 @@ impl Row {
             None -> false,
         }
     }
+
+    fun optional(self, name: String) -> Result<Option<String>, Error> {
+        return match self.index_of(name) {
+            Some(index) -> {
+                if self.nulls[index] {
+                    Ok(None)
+                } else {
+                    Ok(Some(self.values[index]))
+                }
+            },
+            None -> Err(error_kind("nest", "column ${name} is missing")),
+        }
+    }
+
+    fun required(self, name: String) -> Result<String, Error> {
+        return match self.optional(name)? {
+            Some(value) -> Ok(value),
+            None -> Err(error_kind("nest", "column ${name} is NULL")),
+        }
+    }
+
+    fun int_named(self, name: String) -> Result<Int, Error> {
+        let value = self.required(name)?
+        return match value.parse_int() {
+            Some(parsed) -> Ok(parsed),
+            None -> Err(error_kind("nest", "column ${name} is not an integer")),
+        }
+    }
+
+    fun float_named(self, name: String) -> Result<Float, Error> {
+        let value = self.required(name)?
+        return match value.parse_float() {
+            Some(parsed) -> Ok(parsed),
+            None -> Err(error_kind("nest", "column ${name} is not a float")),
+        }
+    }
+
+    fun bool_named(self, name: String) -> Result<Bool, Error> {
+        let value = self.required(name)?.to_lower()
+        if value == "true" || value == "t" || value == "1" {
+            return Ok(true)
+        }
+        if value == "false" || value == "f" || value == "0" {
+            return Ok(false)
+        }
+        return Err(error_kind("nest", "column ${name} is not a boolean"))
+    }
 }
 
 struct QueryResult {
