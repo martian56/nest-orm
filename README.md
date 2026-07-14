@@ -6,8 +6,10 @@ one query, result, model, and migration API over PostgreSQL, MySQL, and SQLite.
 Its public `Executor` trait keeps the adapter boundary open to future Raven
 database libraries.
 
-Nest is under active initial development. The current foundation is tested end
-to end with Raven 2.26.0, PostgreSQL 17, MySQL 8.0.43, and bundled SQLite.
+Nest is under active initial development. It requires Raven 2.26.1 or later (the
+transaction helper passes a closure whose parameter is typed with the adapter,
+which earlier compilers could not resolve). The current foundation is tested end
+to end with Raven 2.26.1, PostgreSQL 17, MySQL 8.0.43, and bundled SQLite.
 
 ## What works
 
