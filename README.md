@@ -15,6 +15,10 @@ to end with Raven 2.26.0, PostgreSQL 17, MySQL 8.0.43, and bundled SQLite.
 - PostgreSQL, MySQL, and SQLite dialect-specific placeholders and identifier
   quoting.
 - INNER and LEFT joins, aliases, predicates, ordering, limits, and offsets.
+- IN and NOT IN predicates with parameterized lists (an empty list matches nothing).
+- INSERT ... RETURNING on PostgreSQL and SQLite to read generated columns.
+- Transactions: begin, commit, rollback, and a transaction() helper that commits
+  on success and rolls back on error.
 - Typed text, integer, decimal, boolean, and SQL NULL values.
 - A common result type with indexed and named row access.
 - Compile-time model mapping through `FromRow`.

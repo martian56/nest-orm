@@ -3,12 +3,13 @@ import std/string
 import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
 import "github.com/martian56/raven-mysql" { connect as connect_mysql }
 import "github.com/martian56/raven-postgres" { connect as connect_postgres }
+import std/error { error_kind }
 import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
-import "./lib" { Executor, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, select, text, update, update_all }
+import "./lib" { Executor, QueryResult, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, select, text, transaction, update, update_all }
 import "./migrations" { Migration, migrate, migration, rollback_last }
 import "./mysql" { mysql }
 import "./postgres" { postgres }
-import "./sqlite" { sqlite }
+import "./sqlite" { Sqlite, sqlite }
 
 fun must_result<T>(result: Result<T, Error>) -> T {
     return match result {
@@ -57,6 +58,47 @@ fun verify_live_migrations<T: Executor>(db: T) {
         Some(version) -> assert_eq_int(version, 1001),
         None -> assert_msg(false, "expected live migration to roll back"),
     }
+}
+
+fun test_transaction_commits_and_rolls_back() {
+    let connection = must_open_sqlite(":memory:")
+    match connection.exec(
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)",
+    ) {
+        Ok(_) -> {},
+        Err(message) -> __panic(message),
+    }
+    let db = sqlite(connection)
+
+    // Commit path: the inserted row is visible after the transaction returns Ok.
+    let _committed = must_result(
+        transaction(
+            db,
+            fun(tx: Sqlite) -> Result<QueryResult, Error> = insert_one(
+                tx,
+                insert_into("accounts").value("name", text("Ada")),
+            ),
+        ),
+    )
+    assert_eq_int(must_result(fetch_all(db, select("accounts"))).row_count(), 1)
+
+    // Rollback path: the body inserts a row and then yields Err, so the write
+    // is undone and the row count stays at one.
+    let outcome = transaction(
+        db,
+        fun(tx: Sqlite) -> Result<QueryResult, Error> = match insert_one(
+            tx,
+            insert_into("accounts").value("name", text("Grace")),
+        ) {
+            Ok(_) -> Err(error_kind("test", "boom")),
+            Err(inner) -> Err(inner),
+        },
+    )
+    match outcome {
+        Ok(_) -> assert_msg(false, "transaction should have failed"),
+        Err(_) -> assert_true(true),
+    }
+    assert_eq_int(must_result(fetch_all(db, select("accounts"))).row_count(), 1)
 }
 
 fun test_sqlite_adapter_crud_end_to_end() {

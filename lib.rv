@@ -230,6 +230,7 @@ struct Condition {
     column: String,
     operator: String,
     value: Option<Value>,
+    values: List<Value>,
 }
 
 struct Ordering {
@@ -341,6 +342,16 @@ impl SelectQuery {
         return self
     }
 
+    fun where_in(self, column: String, values: List<Value>) -> SelectQuery {
+        self.conditions.push(in_condition("AND", column, "IN", values))
+        return self
+    }
+
+    fun where_not_in(self, column: String, values: List<Value>) -> SelectQuery {
+        self.conditions.push(in_condition("AND", column, "NOT IN", values))
+        return self
+    }
+
     fun order_asc(self, column: String) -> SelectQuery {
         self.orderings.push(Ordering { column, direction: "ASC" })
         return self
@@ -443,16 +454,26 @@ struct Assignment {
 struct InsertQuery {
     table: String,
     values: List<Assignment>,
+    returning: List<String>,
 }
 
 fun insert_into(table: String) -> InsertQuery {
     let values: List<Assignment> = []
-    return InsertQuery { table, values }
+    let returning: List<String> = []
+    return InsertQuery { table, values, returning }
 }
 
 impl InsertQuery {
     fun value(self, column: String, value: Value) -> InsertQuery {
         self.values.push(Assignment { column, value })
+        return self
+    }
+
+    // Return `column` from the inserted row (PostgreSQL and SQLite). Chain it to
+    // read a generated id without a follow-up query. MySQL has no RETURNING;
+    // compile rejects it there so the mistake surfaces before the round trip.
+    fun returning(self, column: String) -> InsertQuery {
+        self.returning.push(column)
         return self
     }
 
@@ -482,7 +503,29 @@ impl InsertQuery {
         }
         sql = sql.concat(")")
         let columns: List<String> = []
-        return Ok(CompiledQuery { sql, params, columns, returns_rows: false })
+        let returns_rows = false
+        if self.returning.len() > 0 {
+            let mysql = match dialect {
+                MySql -> true,
+                Postgres -> false,
+                Sqlite -> false,
+            }
+            if mysql {
+                return Err(error_kind("nest", "MySQL does not support RETURNING"))
+            }
+            sql = sql.concat(" RETURNING ")
+            let r = 0
+            while r < self.returning.len() {
+                if r > 0 {
+                    sql = sql.concat(", ")
+                }
+                sql = sql.concat(quote_identifier(self.returning[r], dialect)?)
+                columns.push(last_identifier_segment(self.returning[r]))
+                r = r + 1
+            }
+            returns_rows = true
+        }
+        return Ok(CompiledQuery { sql, params, columns, returns_rows })
     }
 }
 
@@ -586,17 +629,31 @@ struct ConditionSql {
     params: List<Option<String>>,
 }
 
+fun no_values() -> List<Value> {
+    let values: List<Value> = []
+    return values
+}
+
 fun value_condition(
     connector: String,
     column: String,
     operator: String,
     value: Value,
 ) -> Condition {
-    return Condition { connector, column, operator, value: Some(value) }
+    return Condition { connector, column, operator, value: Some(value), values: no_values() }
 }
 
 fun null_condition(connector: String, column: String, operator: String) -> Condition {
-    return Condition { connector, column, operator, value: None }
+    return Condition { connector, column, operator, value: None, values: no_values() }
+}
+
+fun in_condition(
+    connector: String,
+    column: String,
+    operator: String,
+    values: List<Value>,
+) -> Condition {
+    return Condition { connector, column, operator, value: None, values }
 }
 
 fun compile_conditions(
@@ -616,12 +673,32 @@ fun compile_conditions(
         }
         sql = sql.concat(quote_identifier(condition.column, dialect)?)
         sql = sql.concat(" ").concat(condition.operator)
-        match condition.value {
-            Some(value) -> {
-                sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
-                params.push(value.parameter())
-            },
-            None -> {},
+        if condition.operator == "IN" || condition.operator == "NOT IN" {
+            // An empty list can never match, so IN (NULL) yields no rows rather
+            // than the invalid IN ().
+            if condition.values.len() == 0 {
+                sql = sql.concat(" (NULL)")
+            } else {
+                sql = sql.concat(" (")
+                let j = 0
+                while j < condition.values.len() {
+                    if j > 0 {
+                        sql = sql.concat(", ")
+                    }
+                    sql = sql.concat(dialect.placeholder(start_index + params.len()))
+                    params.push(condition.values[j].parameter())
+                    j = j + 1
+                }
+                sql = sql.concat(")")
+            }
+        } else {
+            match condition.value {
+                Some(value) -> {
+                    sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
+                    params.push(value.parameter())
+                },
+                None -> {},
+            }
         }
         i = i + 1
     }
@@ -696,4 +773,45 @@ fun update_all<T: Executor>(executor: T, query: UpdateQuery) -> Result<QueryResu
 
 fun delete_all<T: Executor>(executor: T, query: DeleteQuery) -> Result<QueryResult, Error> {
     return executor.run(query.compile(executor.dialect())?)
+}
+
+fun empty_param_list() -> List<Option<String>> {
+    let params: List<Option<String>> = []
+    return params
+}
+
+fun empty_column_list() -> List<String> {
+    let columns: List<String> = []
+    return columns
+}
+
+// Transaction control. BEGIN, COMMIT, and ROLLBACK are accepted by all three
+// bundled dialects (MySQL treats BEGIN as START TRANSACTION).
+fun begin<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+    return executor.run(raw_query("BEGIN", empty_param_list(), empty_column_list(), false))
+}
+
+fun commit<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+    return executor.run(raw_query("COMMIT", empty_param_list(), empty_column_list(), false))
+}
+
+fun rollback<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+    return executor.run(raw_query("ROLLBACK", empty_param_list(), empty_column_list(), false))
+}
+
+// Run `body` inside a transaction: BEGIN, then COMMIT on Ok, or ROLLBACK on Err
+// (the original error is preserved). The rollback is best effort, so a failed
+// body still surfaces its own error rather than a rollback error.
+fun transaction<T: Executor, R>(executor: T, body: fun(T) -> Result<R, Error>) -> Result<R, Error> {
+    begin(executor)?
+    return match body(executor) {
+        Ok(value) -> {
+            commit(executor)?
+            Ok(value)
+        },
+        Err(error) -> {
+            let _ = rollback(executor)
+            Err(error)
+        },
+    }
 }

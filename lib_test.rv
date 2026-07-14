@@ -1,5 +1,5 @@
 import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
-import "./lib" { CompiledQuery, Dialect, Executor, FromRow, QueryResult, Row, boolean, delete_from, fetch_all, insert_into, integer, map_rows, null, quote_identifier, select, text, update }
+import "./lib" { CompiledQuery, Dialect, Executor, FromRow, QueryResult, Row, Value, boolean, delete_from, fetch_all, insert_into, integer, map_rows, null, quote_identifier, select, text, update }
 
 fun must<T>(result: Result<T, Error>) -> T {
     return match result {
@@ -75,6 +75,48 @@ fun test_select_star_and_null_predicates() {
         "SELECT * FROM \"events\" WHERE \"deleted_at\" IS NULL AND \"created_at\" IS NOT NULL",
     )
     assert_eq_int(compiled.params.len(), 0)
+}
+
+fun test_where_in_compiles_with_placeholders() {
+    let status: List<Value> = [text("active"), text("pending")]
+    let roles: List<Value> = [text("admin")]
+    let compiled = must(
+        select("users").column("id").where_in("status", status).where_not_in("role", roles).compile(
+            Dialect.Postgres,
+        ),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "SELECT \"id\" FROM \"users\" WHERE \"status\" IN ($1, $2) AND \"role\" NOT IN ($3)",
+    )
+    assert_eq_int(compiled.params.len(), 3)
+    assert_eq_str(must_some(compiled.params[0]), "active")
+
+    // An empty IN list can never match and emits no parameters.
+    let none: List<Value> = []
+    let empty = must(select("t").where_in("x", none).compile(Dialect.Sqlite))
+    assert_eq_str(empty.sql, "SELECT * FROM \"t\" WHERE \"x\" IN (NULL)")
+    assert_eq_int(empty.params.len(), 0)
+}
+
+fun test_insert_returning_is_postgres_and_sqlite_only() {
+    let compiled = must(
+        insert_into("users").value("name", text("Ada")).returning("id").returning("created_at").compile(
+            Dialect.Postgres,
+        ),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "INSERT INTO \"users\" (\"name\") VALUES ($1) RETURNING \"id\", \"created_at\"",
+    )
+    assert_true(compiled.returns_rows)
+    assert_eq_str(compiled.columns[0], "id")
+
+    // MySQL has no RETURNING, so compiling it there is an error.
+    match insert_into("users").value("name", text("Ada")).returning("id").compile(Dialect.MySql) {
+        Ok(_) -> assert_msg(false, "MySQL RETURNING should be rejected"),
+        Err(_) -> assert_true(true),
+    }
 }
 
 fun test_insert_preserves_value_order_and_null() {
