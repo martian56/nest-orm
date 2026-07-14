@@ -1,0 +1,46 @@
+// MySQL adapter for Nest.
+
+import "github.com/martian56/raven-mysql" { Connection as MySqlConnection, QueryResult as MySqlQueryResult }
+import "./lib" { CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow }
+
+struct MySql {
+    connection: MySqlConnection,
+}
+
+fun mysql(connection: MySqlConnection) -> MySql {
+    return MySql { connection }
+}
+
+impl MySql {
+    fun close(self) {
+        self.connection.close()
+    }
+}
+
+impl Executor for MySql {
+    fun dialect(self) -> Dialect = Dialect.MySql
+
+    fun run(self, query: CompiledQuery) -> Result<NestQueryResult, Error> {
+        let result = self.connection.query_optional_params(query.sql, query.params)?
+        return Ok(mysql_result(result))
+    }
+}
+
+fun mysql_result(result: MySqlQueryResult) -> NestQueryResult {
+    let rows: List<NestRow> = []
+    for row in result.rows {
+        rows.push(
+            NestRow {
+                columns: result.columns,
+                values: row.values,
+                nulls: row.nulls,
+            },
+        )
+    }
+    return NestQueryResult {
+        columns: result.columns,
+        rows,
+        affected: result.affected,
+        last_insert_id: result.last_insert_id,
+    }
+}

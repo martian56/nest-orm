@@ -1,0 +1,111 @@
+// SQLite adapter for Nest.
+
+import std/error { error_kind }
+import std/string
+import "github.com/martian56/raven-sqlite" { Db as SqliteDb, Stmt as SqliteStmt }
+import "./lib" { CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow }
+
+struct Sqlite {
+    connection: SqliteDb,
+}
+
+fun sqlite(connection: SqliteDb) -> Sqlite {
+    return Sqlite { connection }
+}
+
+impl Sqlite {
+    fun close(self) {
+        self.connection.close()
+    }
+}
+
+impl Executor for Sqlite {
+    fun dialect(self) -> Dialect = Dialect.Sqlite
+
+    fun run(self, query: CompiledQuery) -> Result<NestQueryResult, Error> {
+        let statement = prepare_sqlite(self.connection, query.sql)?
+        bind_sqlite(statement, query.params)
+        if query.returns_rows {
+            return Ok(read_sqlite_rows(self.connection, statement, query.columns))
+        }
+        let _ = statement.step()
+        statement.finalize()
+        let columns: List<String> = []
+        let rows: List<NestRow> = []
+        return Ok(
+            NestQueryResult {
+                columns,
+                rows,
+                affected: self.connection.changes(),
+                last_insert_id: self.connection.last_insert_id(),
+            },
+        )
+    }
+}
+
+fun prepare_sqlite(connection: SqliteDb, sql: String) -> Result<SqliteStmt, Error> {
+    return match connection.prepare(sql) {
+        Ok(value) -> Ok(value),
+        Err(message) -> Err(error_kind("sqlite", message)),
+    }
+}
+
+fun bind_sqlite(statement: SqliteStmt, params: List<Option<String>>) {
+    let i = 0
+    while i < params.len() {
+        match params[i] {
+            Some(value) -> {
+                let _ = statement.bind_text(i + 1, value)
+            },
+            None -> {
+                let _ = statement.bind_null(i + 1)
+            },
+        }
+        i = i + 1
+    }
+}
+
+fun sqlite_columns(statement: SqliteStmt, expected: List<String>) -> List<String> {
+    if expected.len() == statement.column_count() {
+        return expected
+    }
+    let columns: List<String> = []
+    let i = 0
+    while i < statement.column_count() {
+        columns.push("column_${i}")
+        i = i + 1
+    }
+    return columns
+}
+
+fun read_sqlite_rows(
+    connection: SqliteDb,
+    statement: SqliteStmt,
+    expected_columns: List<String>,
+) -> NestQueryResult {
+    let columns = sqlite_columns(statement, expected_columns)
+    let rows: List<NestRow> = []
+    while statement.step() {
+        let values: List<String> = []
+        let nulls: List<Bool> = []
+        let i = 0
+        while i < statement.column_count() {
+            if statement.is_null(i) {
+                values.push("")
+                nulls.push(true)
+            } else {
+                values.push(statement.text(i))
+                nulls.push(false)
+            }
+            i = i + 1
+        }
+        rows.push(NestRow { columns, values, nulls })
+    }
+    statement.finalize()
+    return NestQueryResult {
+        columns,
+        rows,
+        affected: connection.changes(),
+        last_insert_id: connection.last_insert_id(),
+    }
+}

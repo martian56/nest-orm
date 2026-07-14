@@ -1,0 +1,46 @@
+// PostgreSQL adapter for Nest.
+
+import "github.com/martian56/raven-postgres" { Connection as PostgresConnection, QueryResult as PostgresQueryResult }
+import "./lib" { CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow }
+
+struct Postgres {
+    connection: PostgresConnection,
+}
+
+fun postgres(connection: PostgresConnection) -> Postgres {
+    return Postgres { connection }
+}
+
+impl Postgres {
+    fun close(self) {
+        self.connection.close()
+    }
+}
+
+impl Executor for Postgres {
+    fun dialect(self) -> Dialect = Dialect.Postgres
+
+    fun run(self, query: CompiledQuery) -> Result<NestQueryResult, Error> {
+        let result = self.connection.query_optional_params(query.sql, query.params)?
+        return Ok(postgres_result(result))
+    }
+}
+
+fun postgres_result(result: PostgresQueryResult) -> NestQueryResult {
+    let rows: List<NestRow> = []
+    for row in result.rows {
+        rows.push(
+            NestRow {
+                columns: result.columns,
+                values: row.values,
+                nulls: row.nulls,
+            },
+        )
+    }
+    return NestQueryResult {
+        columns: result.columns,
+        rows,
+        affected: result.affected,
+        last_insert_id: 0,
+    }
+}

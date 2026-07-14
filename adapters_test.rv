@@ -1,0 +1,216 @@
+import std/env { get_env_or, has_env }
+import std/string
+import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
+import "github.com/martian56/raven-mysql" { connect as connect_mysql }
+import "github.com/martian56/raven-postgres" { connect as connect_postgres }
+import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
+import "./lib" { delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, select, text, update, update_all }
+import "./mysql" { mysql }
+import "./postgres" { postgres }
+import "./sqlite" { sqlite }
+
+fun must_result<T>(result: Result<T, Error>) -> T {
+    return match result {
+        Ok(value) -> value,
+        Err(e) -> {
+            __panic(e.message())
+            must_result(result)
+        },
+    }
+}
+
+fun must_open_sqlite(path: String) -> SqliteDb {
+    return match SqliteDb.open(path) {
+        Ok(db) -> db,
+        Err(message) -> {
+            __panic(message)
+            must_open_sqlite(path)
+        },
+    }
+}
+
+fun string_or(value: Option<String>, fallback: String) -> String {
+    return match value {
+        Some(inner) -> inner,
+        None -> fallback,
+    }
+}
+
+fun test_sqlite_adapter_crud_end_to_end() {
+    let connection = must_open_sqlite(":memory:")
+    match connection.exec(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, nickname TEXT NULL)",
+    ) {
+        Ok(changed) -> {},
+        Err(message) -> __panic(message),
+    }
+    let db = sqlite(connection)
+
+    let first = must_result(
+        insert_one(db, insert_into("users").value("name", text("Ada")).value("nickname", null())),
+    )
+    assert_eq_int(first.affected, 1)
+    assert_eq_int(first.last_insert_id, 1)
+    let second = must_result(
+        insert_one(
+            db,
+            insert_into("users").value("name", text("Grace")).value(
+                "nickname",
+                text("Amazing Grace"),
+            ),
+        ),
+    )
+    assert_eq_int(second.last_insert_id, 2)
+
+    let users = must_result(
+        fetch_all(
+            db,
+            select("users").column("id").column("name").column("nickname").order_asc("id"),
+        ),
+    )
+    assert_eq_int(users.row_count(), 2)
+    assert_eq_str(string_or(users.rows[0].get_named("name"), "missing"), "Ada")
+    assert_true(users.rows[0].is_null_named("nickname"))
+    assert_eq_str(users.rows[1].get(2), "Amazing Grace")
+
+    let updated = must_result(
+        update_all(db, update("users").set("nickname", text("Countess")).where_eq("id", integer(1))),
+    )
+    assert_eq_int(updated.affected, 1)
+    let ada = must_result(
+        fetch_all(db, select("users").column("nickname").where_eq("id", integer(1))),
+    )
+    assert_eq_str(ada.rows[0].get(0), "Countess")
+
+    let deleted = must_result(delete_all(db, delete_from("users").where_eq("id", integer(2))))
+    assert_eq_int(deleted.affected, 1)
+    assert_eq_int(must_result(fetch_all(db, select("users").column("id"))).row_count(), 1)
+    db.close()
+}
+
+fun test_sqlite_adapter_keeps_hostile_values_out_of_sql() {
+    let connection = must_open_sqlite(":memory:")
+    let _ = connection.exec("CREATE TABLE notes (body TEXT NOT NULL)")
+    let db = sqlite(connection)
+    let hostile = "'); DROP TABLE notes; --"
+    let _ = must_result(insert_one(db, insert_into("notes").value("body", text(hostile))))
+    let notes = must_result(
+        fetch_all(db, select("notes").column("body").where_eq("body", text(hostile))),
+    )
+    assert_eq_int(notes.row_count(), 1)
+    assert_eq_str(notes.rows[0].get(0), hostile)
+    db.close()
+}
+
+fun postgres_port() -> Int {
+    return match get_env_or("NEST_POSTGRES_PORT", "55433").parse_int() {
+        Some(port) -> port,
+        None -> 55433,
+    }
+}
+
+fun mysql_port() -> Int {
+    return match get_env_or("NEST_MYSQL_PORT", "33307").parse_int() {
+        Some(port) -> port,
+        None -> 33307,
+    }
+}
+
+fun test_postgres_adapter_end_to_end() {
+    if !has_env("NEST_POSTGRES_E2E") {
+        return
+    }
+    let connection = must_result(
+        connect_postgres(
+            "127.0.0.1",
+            postgres_port(),
+            get_env_or("NEST_POSTGRES_USER", "raven"),
+            get_env_or("NEST_POSTGRES_PASSWORD", "ravenpw"),
+            get_env_or("NEST_POSTGRES_DATABASE", "ravendb"),
+        ),
+    )
+    let _ = must_result(connection.execute("DROP TABLE IF EXISTS nest_users"))
+    let _ = must_result(
+        connection.execute(
+            "CREATE TABLE nest_users (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, nickname TEXT NULL)",
+        ),
+    )
+    let db = postgres(connection)
+    assert_eq_int(
+        must_result(
+            insert_one(
+                db,
+                insert_into("nest_users").value("name", text("Ada")).value("nickname", null()),
+            ),
+        ).affected,
+        1,
+    )
+    let rows = must_result(
+        fetch_all(
+            db,
+            select("nest_users").column("id").column("name").column("nickname").where_eq(
+                "name",
+                text("Ada"),
+            ),
+        ),
+    )
+    assert_eq_int(rows.row_count(), 1)
+    assert_eq_str(string_or(rows.rows[0].get_named("name"), "missing"), "Ada")
+    assert_true(rows.rows[0].is_null_named("nickname"))
+    let _ = must_result(delete_all(db, delete_from("nest_users").where_eq("name", text("Ada"))))
+    let _ = must_result(db.connection.execute("DROP TABLE nest_users"))
+    db.close()
+}
+
+fun test_mysql_adapter_end_to_end() {
+    if !has_env("NEST_MYSQL_E2E") {
+        return
+    }
+    let connection = must_result(
+        connect_mysql(
+            "127.0.0.1",
+            mysql_port(),
+            get_env_or("NEST_MYSQL_USER", "raven"),
+            get_env_or("NEST_MYSQL_PASSWORD", "ravenpw"),
+            get_env_or("NEST_MYSQL_DATABASE", "ravendb"),
+        ),
+    )
+    let _ = must_result(connection.execute("DROP TABLE IF EXISTS nest_users"))
+    let _ = must_result(
+        connection.execute(
+            "CREATE TABLE nest_users (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL, nickname VARCHAR(100) NULL)",
+        ),
+    )
+    let db = mysql(connection)
+    let inserted = must_result(
+        insert_one(
+            db,
+            insert_into("nest_users").value("name", text("Ada")).value("nickname", null()),
+        ),
+    )
+    assert_eq_int(inserted.affected, 1)
+    assert_eq_int(inserted.last_insert_id, 1)
+    let rows = must_result(
+        fetch_all(
+            db,
+            select("nest_users").column("id").column("name").column("nickname").where_eq(
+                "name",
+                text("Ada"),
+            ),
+        ),
+    )
+    assert_eq_int(rows.row_count(), 1)
+    assert_eq_str(string_or(rows.rows[0].get_named("name"), "missing"), "Ada")
+    assert_true(rows.rows[0].is_null_named("nickname"))
+    let _ = must_result(
+        update_all(db, update("nest_users").set("name", text("Augusta")).where_eq("id", integer(1))),
+    )
+    assert_eq_str(
+        must_result(fetch_all(db, select("nest_users").column("name").where_eq("id", integer(1)))).rows[0].get(
+            0,
+        ),
+        "Augusta",
+    )
+    let _ = must_result(db.connection.execute("DROP TABLE nest_users"))
+    db.close()
+}
