@@ -1,0 +1,123 @@
+import std/test { assert_eq_int, assert_msg, assert_true }
+import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
+import "./lib" { Executor, raw_query }
+import "./migrations" { Migration, migrate, migration, rollback_last, validate_migrations }
+import "./sqlite" { Sqlite, sqlite }
+
+fun open_memory_db() -> Sqlite {
+    return match SqliteDb.open(":memory:") {
+        Ok(connection) -> sqlite(connection),
+        Err(message) -> {
+            __panic(message)
+            open_memory_db()
+        },
+    }
+}
+
+fun must_migration<T>(result: Result<T, Error>) -> T {
+    return match result {
+        Ok(value) -> value,
+        Err(e) -> {
+            __panic(e.message())
+            must_migration(result)
+        },
+    }
+}
+
+fun int_or(value: Option<Int>, fallback: Int) -> Int {
+    return match value {
+        Some(inner) -> inner,
+        None -> fallback,
+    }
+}
+
+fun project_migrations() -> List<Migration> {
+    return [
+        migration(1, "create projects").up(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+        ).down("DROP TABLE projects"),
+        migration(2, "index project names").up("CREATE INDEX projects_name_idx ON projects (name)").down(
+            "DROP INDEX projects_name_idx",
+        ),
+    ]
+}
+
+fun test_migrations_apply_once_and_track_versions() {
+    let db = open_memory_db()
+    let first = must_migration(migrate(db, project_migrations()))
+    assert_eq_int(first.applied.len(), 2)
+    assert_eq_int(first.applied[0], 1)
+    assert_eq_int(first.applied[1], 2)
+    assert_eq_int(first.skipped, 0)
+
+    let second = must_migration(migrate(db, project_migrations()))
+    assert_eq_int(second.applied.len(), 0)
+    assert_eq_int(second.skipped, 2)
+    db.close()
+}
+
+fun test_rollback_last_reverts_one_migration_at_a_time() {
+    let db = open_memory_db()
+    let migrations = project_migrations()
+    let _ = must_migration(migrate(db, migrations))
+    let second = must_migration(rollback_last(db, migrations))
+    match second.rolled_back {
+        Some(version) -> assert_eq_int(version, 2),
+        None -> assert_msg(false, "expected migration 2 to roll back"),
+    }
+    let first = must_migration(rollback_last(db, migrations))
+    match first.rolled_back {
+        Some(version) -> assert_eq_int(version, 1),
+        None -> assert_msg(false, "expected migration 1 to roll back"),
+    }
+    let empty = must_migration(rollback_last(db, migrations))
+    match empty.rolled_back {
+        Some(version) -> assert_msg(false, "nothing should remain to roll back"),
+        None -> assert_true(true),
+    }
+    db.close()
+}
+
+fun test_failed_sqlite_migration_rolls_back_transaction() {
+    let db = open_memory_db()
+    let migrations = [
+        migration(1, "broken").up("CREATE TABLE should_not_exist (id INTEGER)").up(
+            "THIS IS NOT SQL",
+        ).down("DROP TABLE should_not_exist"),
+    ]
+    match migrate(db, migrations) {
+        Ok(report) -> assert_msg(false, "broken migration unexpectedly succeeded"),
+        Err(e) -> assert_true(e.message().length() > 0),
+    }
+    let params: List<Option<String>> = []
+    let columns: List<String> = ["count"]
+    let result = must_migration(
+        db.run(
+            raw_query(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'should_not_exist'",
+                params,
+                columns,
+                true,
+            ),
+        ),
+    )
+    assert_eq_int(int_or(result.rows[0].get(0).parse_int(), -1), 0)
+    db.close()
+}
+
+fun test_migration_validation_rejects_unsafe_sequences() {
+    match validate_migrations([migration(0, "zero").up("SELECT 1")]) {
+        Ok(value) -> assert_msg(false, "zero version unexpectedly validated"),
+        Err(e) -> assert_true(e.message().contains("positive")),
+    }
+    match validate_migrations(
+        [migration(2, "second").up("SELECT 1"), migration(1, "first").up("SELECT 1")],
+    ) {
+        Ok(value) -> assert_msg(false, "out-of-order migrations unexpectedly validated"),
+        Err(e) -> assert_true(e.message().contains("ordered")),
+    }
+    match validate_migrations([migration(1, "empty")]) {
+        Ok(value) -> assert_msg(false, "statement-less migration unexpectedly validated"),
+        Err(e) -> assert_true(e.message().contains("no up statements")),
+    }
+}

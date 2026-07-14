@@ -4,7 +4,8 @@ import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
 import "github.com/martian56/raven-mysql" { connect as connect_mysql }
 import "github.com/martian56/raven-postgres" { connect as connect_postgres }
 import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
-import "./lib" { delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, select, text, update, update_all }
+import "./lib" { Executor, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, select, text, update, update_all }
+import "./migrations" { Migration, migrate, migration, rollback_last }
 import "./mysql" { mysql }
 import "./postgres" { postgres }
 import "./sqlite" { sqlite }
@@ -33,6 +34,28 @@ fun string_or(value: Option<String>, fallback: String) -> String {
     return match value {
         Some(inner) -> inner,
         None -> fallback,
+    }
+}
+
+fun probe_migrations() -> List<Migration> {
+    return [
+        migration(1001, "create probe").up(
+            "CREATE TABLE nest_migration_probe (id BIGINT PRIMARY KEY)",
+        ).down("DROP TABLE nest_migration_probe"),
+    ]
+}
+
+fun verify_live_migrations<T: Executor>(db: T) {
+    let report = must_result(migrate(db, probe_migrations()))
+    assert_eq_int(report.applied.len(), 1)
+    assert_eq_int(report.applied[0], 1001)
+    let repeated = must_result(migrate(db, probe_migrations()))
+    assert_eq_int(repeated.applied.len(), 0)
+    assert_eq_int(repeated.skipped, 1)
+    let rolled_back = must_result(rollback_last(db, probe_migrations()))
+    match rolled_back.rolled_back {
+        Some(version) -> assert_eq_int(version, 1001),
+        None -> assert_msg(false, "expected live migration to roll back"),
     }
 }
 
@@ -158,6 +181,7 @@ fun test_postgres_adapter_end_to_end() {
     assert_eq_str(string_or(rows.rows[0].get_named("name"), "missing"), "Ada")
     assert_true(rows.rows[0].is_null_named("nickname"))
     let _ = must_result(delete_all(db, delete_from("nest_users").where_eq("name", text("Ada"))))
+    verify_live_migrations(db)
     let _ = must_result(db.connection.execute("DROP TABLE nest_users"))
     db.close()
 }
@@ -211,6 +235,7 @@ fun test_mysql_adapter_end_to_end() {
         ),
         "Augusta",
     )
+    verify_live_migrations(db)
     let _ = must_result(db.connection.execute("DROP TABLE nest_users"))
     db.close()
 }

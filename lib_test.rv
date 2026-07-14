@@ -1,5 +1,6 @@
+import std/error { error_kind }
 import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
-import "./lib" { CompiledQuery, Dialect, Executor, QueryResult, Row, boolean, delete_from, fetch_all, insert_into, integer, null, quote_identifier, select, text, update }
+import "./lib" { CompiledQuery, Dialect, Executor, FromRow, QueryResult, Row, boolean, delete_from, fetch_all, insert_into, integer, map_rows, null, quote_identifier, select, text, update }
 
 fun must<T>(result: Result<T, Error>) -> T {
     return match result {
@@ -184,4 +185,49 @@ fun test_executor_contract_is_open_to_third_party_adapters() {
     }
     let result = must(fetch_all(executor, select("users").column("id").where_eq("id", integer(1))))
     assert_eq_int(result.row_count(), 0)
+}
+
+struct User {
+    id: Int,
+    name: String,
+}
+
+fun required_user_field(row: Row, name: String) -> Result<String, Error> {
+    return match row.get_named(name) {
+        Some(value) -> Ok(value),
+        None -> Err(error_kind("nest", "user field ${name} is missing")),
+    }
+}
+
+fun parse_user_id(value: String) -> Result<Int, Error> {
+    return match value.parse_int() {
+        Some(parsed) -> Ok(parsed),
+        None -> Err(error_kind("nest", "user id is not an integer")),
+    }
+}
+
+impl FromRow for User {
+    fun from_row(row: Row) -> Result<User, Error> {
+        let id = parse_user_id(required_user_field(row, "id")?)?
+        let name = required_user_field(row, "name")?
+        return Ok(User { id, name })
+    }
+}
+
+fun test_query_results_map_into_models() {
+    let row = Row {
+        columns: ["id", "name"],
+        values: ["7", "Ada"],
+        nulls: [false, false],
+    }
+    let result = QueryResult {
+        columns: ["id", "name"],
+        rows: [row],
+        affected: 0,
+        last_insert_id: 0,
+    }
+    let users: List<User> = must(map_rows(result))
+    assert_eq_int(users.len(), 1)
+    assert_eq_int(users[0].id, 7)
+    assert_eq_str(users[0].name, "Ada")
 }

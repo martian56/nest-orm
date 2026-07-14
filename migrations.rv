@@ -1,0 +1,267 @@
+// Versioned migrations for every Nest Executor.
+
+import std/error { error_kind }
+import std/string
+import "./lib" { CompiledQuery, Dialect, Executor, QueryResult, Row, delete_all, delete_from, insert_into, insert_one, integer, raw_query, text }
+
+struct Migration {
+    version: Int,
+    name: String,
+    up_statements: List<String>,
+    down_statements: List<String>,
+}
+
+fun migration(version: Int, name: String) -> Migration {
+    let up_statements: List<String> = []
+    let down_statements: List<String> = []
+    return Migration { version, name, up_statements, down_statements }
+}
+
+impl Migration {
+    fun up(self, sql: String) -> Migration {
+        self.up_statements.push(sql)
+        return self
+    }
+
+    fun down(self, sql: String) -> Migration {
+        self.down_statements.push(sql)
+        return self
+    }
+}
+
+struct AppliedMigration {
+    version: Int,
+    name: String,
+}
+
+struct MigrationReport {
+    applied: List<Int>,
+    skipped: Int,
+}
+
+struct RollbackReport {
+    rolled_back: Option<Int>,
+}
+
+fun empty_params() -> List<Option<String>> {
+    let params: List<Option<String>> = []
+    return params
+}
+
+fun empty_columns() -> List<String> {
+    let columns: List<String> = []
+    return columns
+}
+
+fun run_sql<T: Executor>(executor: T, sql: String) -> Result<QueryResult, Error> {
+    return executor.run(raw_query(sql, empty_params(), empty_columns(), false))
+}
+
+fun ensure_migration_table<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+    return run_sql(
+        executor,
+        "CREATE TABLE IF NOT EXISTS nest_migrations (version BIGINT PRIMARY KEY, name VARCHAR(255) NOT NULL)",
+    )
+}
+
+fun validate_migrations(migrations: List<Migration>) -> Result<Bool, Error> {
+    let previous = 0
+    for item in migrations {
+        if item.version <= 0 {
+            return Err(error_kind("nest", "migration versions must be positive"))
+        }
+        if item.version <= previous {
+            return Err(error_kind("nest", "migrations must be ordered by unique, increasing versions"))
+        }
+        if item.name.length() == 0 {
+            return Err(error_kind("nest", "migration names cannot be empty"))
+        }
+        if item.up_statements.len() == 0 {
+            return Err(error_kind("nest", "migration ${item.version} has no up statements"))
+        }
+        previous = item.version
+    }
+    return Ok(true)
+}
+
+fun parse_migration_version(value: String) -> Result<Int, Error> {
+    return match value.parse_int() {
+        Some(version) -> Ok(version),
+        None -> Err(error_kind("nest", "invalid version in nest_migrations")),
+    }
+}
+
+fun applied_migrations<T: Executor>(executor: T) -> Result<List<AppliedMigration>, Error> {
+    let columns: List<String> = ["version", "name"]
+    let result = executor.run(
+        raw_query(
+            "SELECT version, name FROM nest_migrations ORDER BY version ASC",
+            empty_params(),
+            columns,
+            true,
+        ),
+    )?
+    let applied: List<AppliedMigration> = []
+    for row in result.rows {
+        let version = parse_migration_version(row.get(0))?
+        applied.push(AppliedMigration { version, name: row.get(1) })
+    }
+    return Ok(applied)
+}
+
+fun contains_version(applied: List<AppliedMigration>, version: Int) -> Bool {
+    for item in applied {
+        if item.version == version {
+            return true
+        }
+    }
+    return false
+}
+
+fun transactional_ddl(dialect: Dialect) -> Bool {
+    return match dialect {
+        Postgres -> true,
+        Sqlite -> true,
+        MySql -> false,
+    }
+}
+
+fun rollback_quietly<T: Executor>(executor: T) {
+    let _ = run_sql(executor, "ROLLBACK")
+}
+
+fun apply_one<T: Executor>(executor: T, item: Migration) -> Result<Bool, Error> {
+    let transactional = transactional_ddl(executor.dialect())
+    if transactional {
+        let _ = run_sql(executor, "BEGIN")?
+    }
+    for statement in item.up_statements {
+        match run_sql(executor, statement) {
+            Ok(result) -> {},
+            Err(e) -> {
+                if transactional {
+                    rollback_quietly(executor)
+                }
+                return Err(e)
+            },
+        }
+    }
+    match insert_one(
+        executor,
+        insert_into("nest_migrations").value("version", integer(item.version)).value(
+            "name",
+            text(item.name),
+        ),
+    ) {
+        Ok(result) -> {},
+        Err(e) -> {
+            if transactional {
+                rollback_quietly(executor)
+            }
+            return Err(e)
+        },
+    }
+    if transactional {
+        let _ = run_sql(executor, "COMMIT")?
+    }
+    return Ok(true)
+}
+
+fun migrate<T: Executor>(
+    executor: T,
+    migrations: List<Migration>,
+) -> Result<MigrationReport, Error> {
+    let _ = validate_migrations(migrations)?
+    let _ = ensure_migration_table(executor)?
+    let applied_before = applied_migrations(executor)?
+    let applied: List<Int> = []
+    let skipped = 0
+    for item in migrations {
+        if contains_version(applied_before, item.version) {
+            skipped = skipped + 1
+        } else {
+            let _ = apply_one(executor, item)?
+            applied.push(item.version)
+        }
+    }
+    return Ok(MigrationReport { applied, skipped })
+}
+
+fun find_migration(migrations: List<Migration>, version: Int) -> Option<Migration> {
+    for item in migrations {
+        if item.version == version {
+            return Some(item)
+        }
+    }
+    return None
+}
+
+fun require_migration(migrations: List<Migration>, version: Int) -> Result<Migration, Error> {
+    return match find_migration(migrations, version) {
+        Some(value) -> Ok(value),
+        None -> Err(
+            error_kind("nest", "applied migration ${version} is missing from the migration list"),
+        ),
+    }
+}
+
+fun rollback_one<T: Executor>(executor: T, item: Migration) -> Result<Bool, Error> {
+    if item.down_statements.len() == 0 {
+        return Err(error_kind("nest", "migration ${item.version} has no down statements"))
+    }
+    let transactional = transactional_ddl(executor.dialect())
+    if transactional {
+        let _ = run_sql(executor, "BEGIN")?
+    }
+    for statement in item.down_statements {
+        match run_sql(executor, statement) {
+            Ok(result) -> {},
+            Err(e) -> {
+                if transactional {
+                    rollback_quietly(executor)
+                }
+                return Err(e)
+            },
+        }
+    }
+    match delete_all(
+        executor,
+        delete_from("nest_migrations").where_eq("version", integer(item.version)),
+    ) {
+        Ok(result) -> {},
+        Err(e) -> {
+            if transactional {
+                rollback_quietly(executor)
+            }
+            return Err(e)
+        },
+    }
+    if transactional {
+        let _ = run_sql(executor, "COMMIT")?
+    }
+    return Ok(true)
+}
+
+fun rollback_last<T: Executor>(
+    executor: T,
+    migrations: List<Migration>,
+) -> Result<RollbackReport, Error> {
+    let _ = validate_migrations(migrations)?
+    let _ = ensure_migration_table(executor)?
+    let columns: List<String> = ["version", "name"]
+    let result = executor.run(
+        raw_query(
+            "SELECT version, name FROM nest_migrations ORDER BY version DESC LIMIT 1",
+            empty_params(),
+            columns,
+            true,
+        ),
+    )?
+    if result.rows.len() == 0 {
+        return Ok(RollbackReport { rolled_back: None })
+    }
+    let version = parse_migration_version(result.rows[0].get(0))?
+    let item = require_migration(migrations, version)?
+    let _ = rollback_one(executor, item)?
+    return Ok(RollbackReport { rolled_back: Some(version) })
+}

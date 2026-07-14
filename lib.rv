@@ -132,6 +132,24 @@ impl QueryResult {
     fun row_count(self) -> Int = self.rows.len()
 }
 
+// Models opt into decoding explicitly, so mappings stay compile-time checked
+// without runtime reflection. A future derive can generate this same trait.
+trait FromRow {
+    fun from_row(row: Row) -> Result<Self, Error>
+}
+
+fun decode_row<T: FromRow>(row: Row) -> Result<T, Error> {
+    return T.from_row(row)
+}
+
+fun map_rows<T: FromRow>(result: QueryResult) -> Result<List<T>, Error> {
+    let models: List<T> = []
+    for row in result.rows {
+        models.push(T.from_row(row)?)
+    }
+    return Ok(models)
+}
+
 // The only contract required from a database adapter.
 trait Executor {
     fun dialect(self) -> Dialect
