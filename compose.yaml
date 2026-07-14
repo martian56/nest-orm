@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:17.5-alpine
+    environment:
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: ravenpw
+      POSTGRES_DB: ravendb
+      POSTGRES_HOST_AUTH_METHOD: password
+    ports:
+      - "127.0.0.1:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raven -d ravendb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  mysql:
+    image: mysql:8.0.43
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: ravendb
+      MYSQL_USER: raven
+      MYSQL_PASSWORD: ravenpw
+    ports:
+      - "127.0.0.1:33307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uraven", "-pravenpw"]
+      interval: 2s
+      timeout: 3s
+      retries: 45
+    tmpfs:
+      - /var/lib/mysql
