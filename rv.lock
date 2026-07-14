@@ -1,0 +1,16 @@
+version = 1
+
+[[package]]
+source = "github.com/martian56/raven-mysql"
+version = "v0.1.0"
+hash = "sha256:b36008fcb6c3b25646ef97b086e04291e91769b8ac4c76197c078bc3af8aad2b"
+
+[[package]]
+source = "github.com/martian56/raven-postgres"
+version = "v0.1.0"
+hash = "sha256:e36b28e03b5311a07d72adfd2fe2987e4df66dbfc76b55f8cbef29591e4432c0"
+
+[[package]]
+source = "github.com/martian56/raven-sqlite"
+version = "v0.1.0"
+hash = "sha256:49737a54e18fdc8a0fb6a9f196a4540644176d5d96b6257e392f162b8fa6ccdf"

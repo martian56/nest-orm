@@ -1,0 +1,187 @@
+import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
+import "./lib" { CompiledQuery, Dialect, Executor, QueryResult, Row, boolean, delete_from, fetch_all, insert_into, integer, null, quote_identifier, select, text, update }
+
+fun must<T>(result: Result<T, Error>) -> T {
+    return match result {
+        Ok(value) -> value,
+        Err(e) -> {
+            __panic(e.message())
+            must(result)
+        },
+    }
+}
+
+fun must_some(value: Option<String>) -> String {
+    return match value {
+        Some(inner) -> inner,
+        None -> {
+            __panic("expected Some(String)")
+            ""
+        },
+    }
+}
+
+fun is_none_string(value: Option<String>) -> Bool {
+    return match value {
+        Some(inner) -> false,
+        None -> true,
+    }
+}
+
+fun test_select_compiles_postgres_query() {
+    let query = select("users").column("users.id").column_as("users.name", "display_name").left_join(
+        "profiles",
+        "users.id",
+        "profiles.user_id",
+    ).where_eq("users.active", boolean(true)).where_gt("users.age", integer(17)).order_desc("users.id").limit(
+        10,
+    ).offset(5)
+    let compiled = must(query.compile(Dialect.Postgres))
+    assert_eq_str(
+        compiled.sql,
+        "SELECT \"users\".\"id\", \"users\".\"name\" AS \"display_name\" FROM \"users\" LEFT JOIN \"profiles\" ON \"users\".\"id\" = \"profiles\".\"user_id\" WHERE \"users\".\"active\" = $1 AND \"users\".\"age\" > $2 ORDER BY \"users\".\"id\" DESC LIMIT 10 OFFSET 5",
+    )
+    assert_eq_int(compiled.params.len(), 2)
+    assert_eq_str(must_some(compiled.params[0]), "true")
+    assert_eq_str(must_some(compiled.params[1]), "17")
+    assert_eq_str(compiled.columns[0], "id")
+    assert_eq_str(compiled.columns[1], "display_name")
+    assert_true(compiled.returns_rows)
+}
+
+fun test_select_compiles_mysql_query() {
+    let compiled = must(
+        select("accounts").column("id").column("email").where_like("email", text("%@example.com")).or_where_eq(
+            "role",
+            text("admin"),
+        ).order_asc("email").compile(Dialect.MySql),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "SELECT `id`, `email` FROM `accounts` WHERE `email` LIKE ? OR `role` = ? ORDER BY `email` ASC",
+    )
+    assert_eq_str(must_some(compiled.params[0]), "%@example.com")
+    assert_eq_str(must_some(compiled.params[1]), "admin")
+}
+
+fun test_select_star_and_null_predicates() {
+    let compiled = must(
+        select("events").where_null("deleted_at").where_not_null("created_at").compile(
+            Dialect.Sqlite,
+        ),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "SELECT * FROM \"events\" WHERE \"deleted_at\" IS NULL AND \"created_at\" IS NOT NULL",
+    )
+    assert_eq_int(compiled.params.len(), 0)
+}
+
+fun test_insert_preserves_value_order_and_null() {
+    let compiled = must(
+        insert_into("users").value("name", text("Ada")).value("age", integer(36)).value(
+            "nickname",
+            null(),
+        ).compile(Dialect.Postgres),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "INSERT INTO \"users\" (\"name\", \"age\", \"nickname\") VALUES ($1, $2, $3)",
+    )
+    assert_eq_int(compiled.params.len(), 3)
+    assert_eq_str(must_some(compiled.params[0]), "Ada")
+    assert_eq_str(must_some(compiled.params[1]), "36")
+    assert_true(is_none_string(compiled.params[2]))
+    assert_true(!compiled.returns_rows)
+}
+
+fun test_update_numbers_conditions_after_assignments() {
+    let compiled = must(
+        update("users").set("name", text("Grace")).set("active", boolean(false)).where_eq(
+            "id",
+            integer(7),
+        ).compile(Dialect.Postgres),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "UPDATE \"users\" SET \"name\" = $1, \"active\" = $2 WHERE \"id\" = $3",
+    )
+    assert_eq_str(must_some(compiled.params[0]), "Grace")
+    assert_eq_str(must_some(compiled.params[1]), "false")
+    assert_eq_str(must_some(compiled.params[2]), "7")
+}
+
+fun test_delete_compiles_with_parameters() {
+    let compiled = must(
+        delete_from("sessions").where_eq("user_id", integer(42)).compile(Dialect.MySql),
+    )
+    assert_eq_str(compiled.sql, "DELETE FROM `sessions` WHERE `user_id` = ?")
+    assert_eq_str(must_some(compiled.params[0]), "42")
+}
+
+fun test_identifiers_are_quoted_and_validated() {
+    assert_eq_str(
+        must(quote_identifier("schema.users.*", Dialect.Postgres)),
+        "\"schema\".\"users\".*",
+    )
+    match quote_identifier("users; DROP TABLE users", Dialect.Postgres) {
+        Ok(value) -> assert_msg(false, "unsafe identifier unexpectedly compiled"),
+        Err(e) -> assert_eq_str(e.kind(), "nest"),
+    }
+    match quote_identifier("9users", Dialect.MySql) {
+        Ok(value) -> assert_msg(false, "digit-prefixed identifier unexpectedly compiled"),
+        Err(e) -> assert_msg(e.message().contains("invalid SQL identifier"), e.message()),
+    }
+}
+
+fun test_invalid_builder_states_return_errors() {
+    match insert_into("users").compile(Dialect.Sqlite) {
+        Ok(value) -> assert_msg(false, "empty insert unexpectedly compiled"),
+        Err(e) -> assert_msg(e.message().contains("at least one value"), e.message()),
+    }
+    match update("users").where_eq("id", integer(1)).compile(Dialect.Sqlite) {
+        Ok(value) -> assert_msg(false, "empty update unexpectedly compiled"),
+        Err(e) -> assert_msg(e.message().contains("at least one assignment"), e.message()),
+    }
+    match select("users").limit(-1).compile(Dialect.Sqlite) {
+        Ok(value) -> assert_msg(false, "negative limit unexpectedly compiled"),
+        Err(e) -> assert_msg(e.message().contains("limit cannot be negative"), e.message()),
+    }
+}
+
+fun test_row_supports_indexed_and_named_access() {
+    let row = Row {
+        columns: ["id", "nickname"],
+        values: ["7", ""],
+        nulls: [false, true],
+    }
+    assert_eq_str(row.get(0), "7")
+    assert_eq_str(must_some(row.get_named("id")), "7")
+    assert_true(is_none_string(row.get_named("nickname")))
+    assert_true(is_none_string(row.get_named("missing")))
+    assert_true(row.is_null_named("nickname"))
+    assert_true(!row.is_null_named("missing"))
+}
+
+struct RecordingExecutor {
+    expected_sql: String,
+}
+
+impl Executor for RecordingExecutor {
+    fun dialect(self) -> Dialect = Dialect.Postgres
+
+    fun run(self, query: CompiledQuery) -> Result<QueryResult, Error> {
+        assert_eq_str(query.sql, self.expected_sql)
+        let columns: List<String> = []
+        let rows: List<Row> = []
+        return Ok(QueryResult { columns, rows, affected: 0, last_insert_id: 0 })
+    }
+}
+
+fun test_executor_contract_is_open_to_third_party_adapters() {
+    let executor = RecordingExecutor {
+        expected_sql: "SELECT \"id\" FROM \"users\" WHERE \"id\" = $1",
+    }
+    let result = must(fetch_all(executor, select("users").column("id").where_eq("id", integer(1))))
+    assert_eq_int(result.row_count(), 0)
+}

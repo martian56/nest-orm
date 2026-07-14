@@ -1,0 +1,9 @@
+[package]
+name = "nest-orm"
+version = "0.1.0"
+edition = "v2"
+
+[dependencies]
+"github.com/martian56/raven-mysql" = "v0.1.0"
+"github.com/martian56/raven-postgres" = "v0.1.0"
+"github.com/martian56/raven-sqlite" = "v0.1.0"
