@@ -6,6 +6,8 @@
 - Discover SQLite result column labels for wildcard and raw queries.
 - Preserve the logical behavior of empty `IN` and `NOT IN` predicates.
 - Compile equality comparisons with SQL NULL as `IS NULL` and `IS NOT NULL`.
+- Encode booleans portably for PostgreSQL, MySQL, and SQLite.
+- Generate valid offset-only queries for every bundled dialect.
 - Detect renamed or missing migrations that were already applied.
 - Add a MySQL adapter mode for `NO_BACKSLASH_ESCAPES` sessions.
 - Update all bundled database drivers to version 0.2.0.

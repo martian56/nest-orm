@@ -5,7 +5,7 @@ import "github.com/martian56/raven-mysql" { connect as connect_mysql }
 import "github.com/martian56/raven-postgres" { connect as connect_postgres }
 import std/error { error_kind }
 import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
-import "./lib" { Executor, QueryResult, Value, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, raw_query, select, text, transaction, update, update_all }
+import "./lib" { Executor, QueryResult, Value, boolean, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, raw_query, select, text, transaction, update, update_all }
 import "./migrations" { Migration, migrate, migration, rollback_last }
 import "./mysql" { MySql, mysql, mysql_no_backslash_escapes }
 import "./postgres" { Postgres, postgres }
@@ -104,7 +104,7 @@ fun test_transaction_commits_and_rolls_back() {
 fun test_sqlite_adapter_crud_end_to_end() {
     let connection = must_open_sqlite(":memory:")
     match connection.exec(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, nickname TEXT NULL)",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, nickname TEXT NULL, active BOOLEAN NOT NULL)",
     ) {
         Ok(changed) -> {},
         Err(message) -> __panic(message),
@@ -112,7 +112,13 @@ fun test_sqlite_adapter_crud_end_to_end() {
     let db = sqlite(connection)
 
     let first = must_result(
-        insert_one(db, insert_into("users").value("name", text("Ada")).value("nickname", null())),
+        insert_one(
+            db,
+            insert_into("users").value("name", text("Ada")).value("nickname", null()).value(
+                "active",
+                boolean(true),
+            ),
+        ),
     )
     assert_eq_int(first.affected, 1)
     assert_eq_int(first.last_insert_id, 1)
@@ -122,7 +128,7 @@ fun test_sqlite_adapter_crud_end_to_end() {
             insert_into("users").value("name", text("Grace")).value(
                 "nickname",
                 text("Amazing Grace"),
-            ),
+            ).value("active", boolean(false)),
         ),
     )
     assert_eq_int(second.last_insert_id, 2)
@@ -130,12 +136,16 @@ fun test_sqlite_adapter_crud_end_to_end() {
     let users = must_result(
         fetch_all(
             db,
-            select("users").column("id").column("name").column("nickname").order_asc("id"),
+            select("users").column("id").column("name").column("nickname").column("active").order_asc(
+                "id",
+            ),
         ),
     )
     assert_eq_int(users.row_count(), 2)
     assert_eq_str(string_or(users.rows[0].get_named("name"), "missing"), "Ada")
     assert_true(users.rows[0].is_null_named("nickname"))
+    assert_true(must_result(users.rows[0].bool_named("active")))
+    assert_true(!must_result(users.rows[1].bool_named("active")))
     assert_eq_str(users.rows[1].get(2), "Amazing Grace")
 
     let updated = must_result(
@@ -253,16 +263,17 @@ fun test_postgres_adapter_end_to_end() {
     let _ = must_result(connection.execute("DROP TABLE IF EXISTS nest_users"))
     let _ = must_result(
         connection.execute(
-            "CREATE TABLE nest_users (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, nickname TEXT NULL)",
+            "CREATE TABLE nest_users (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, nickname TEXT NULL, active BOOLEAN NOT NULL DEFAULT FALSE)",
         ),
     )
     let db = postgres(connection)
     let inserted = must_result(
         insert_one(
             db,
-            insert_into("nest_users").value("name", text("Ada")).value("nickname", null()).returning(
-                "id",
-            ).returning("name"),
+            insert_into("nest_users").value("name", text("Ada")).value("nickname", null()).value(
+                "active",
+                boolean(true),
+            ).returning("id").returning("name"),
         ),
     )
     assert_eq_int(inserted.affected, 1)
@@ -271,7 +282,7 @@ fun test_postgres_adapter_end_to_end() {
     let rows = must_result(
         fetch_all(
             db,
-            select("nest_users").column("id").column("name").column("nickname").where_eq(
+            select("nest_users").column("id").column("name").column("nickname").column("active").where_eq(
                 "name",
                 text("Ada"),
             ),
@@ -280,6 +291,7 @@ fun test_postgres_adapter_end_to_end() {
     assert_eq_int(rows.row_count(), 1)
     assert_eq_str(string_or(rows.rows[0].get_named("name"), "missing"), "Ada")
     assert_true(rows.rows[0].is_null_named("nickname"))
+    assert_true(must_result(rows.rows[0].bool_named("active")))
     let _ = must_result(
         transaction(
             db,
@@ -325,14 +337,17 @@ fun test_mysql_adapter_end_to_end() {
     let _ = must_result(connection.execute("DROP TABLE IF EXISTS nest_users"))
     let _ = must_result(
         connection.execute(
-            "CREATE TABLE nest_users (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL, nickname VARCHAR(100) NULL)",
+            "CREATE TABLE nest_users (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL, nickname VARCHAR(100) NULL, active BOOLEAN NOT NULL DEFAULT FALSE)",
         ),
     )
     let db = mysql(connection)
     let inserted = must_result(
         insert_one(
             db,
-            insert_into("nest_users").value("name", text("Ada")).value("nickname", null()),
+            insert_into("nest_users").value("name", text("Ada")).value("nickname", null()).value(
+                "active",
+                boolean(true),
+            ),
         ),
     )
     assert_eq_int(inserted.affected, 1)
@@ -340,7 +355,7 @@ fun test_mysql_adapter_end_to_end() {
     let rows = must_result(
         fetch_all(
             db,
-            select("nest_users").column("id").column("name").column("nickname").where_eq(
+            select("nest_users").column("id").column("name").column("nickname").column("active").where_eq(
                 "name",
                 text("Ada"),
             ),
@@ -349,6 +364,7 @@ fun test_mysql_adapter_end_to_end() {
     assert_eq_int(rows.row_count(), 1)
     assert_eq_str(string_or(rows.rows[0].get_named("name"), "missing"), "Ada")
     assert_true(rows.rows[0].is_null_named("nickname"))
+    assert_true(must_result(rows.rows[0].bool_named("active")))
     let _ = must_result(
         update_all(db, update("nest_users").set("name", text("Augusta")).where_eq("id", integer(1))),
     )

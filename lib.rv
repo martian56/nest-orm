@@ -57,9 +57,9 @@ impl Value {
             Decimal(value) -> Some("${value}"),
             Boolean(value) -> {
                 if value {
-                    Some("true")
+                    Some("1")
                 } else {
-                    Some("false")
+                    Some("0")
                 }
             },
         }
@@ -431,7 +431,18 @@ impl SelectQuery {
                 if count < 0 {
                     return Err(error_kind("nest", "offset cannot be negative"))
                 }
-                sql = sql.concat(" OFFSET ${count}")
+                match self.limit_value {
+                    Some(_) -> {
+                        sql = sql.concat(" OFFSET ${count}")
+                    },
+                    None -> {
+                        sql = match dialect {
+                            Postgres -> sql.concat(" OFFSET ${count}"),
+                            MySql -> sql.concat(" LIMIT 18446744073709551615 OFFSET ${count}"),
+                            Sqlite -> sql.concat(" LIMIT -1 OFFSET ${count}"),
+                        }
+                    },
+                }
             },
             None -> {},
         }

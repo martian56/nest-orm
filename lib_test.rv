@@ -42,7 +42,7 @@ fun test_select_compiles_postgres_query() {
         "SELECT \"users\".\"id\", \"users\".\"name\" AS \"display_name\" FROM \"users\" LEFT JOIN \"profiles\" ON \"users\".\"id\" = \"profiles\".\"user_id\" WHERE \"users\".\"active\" = $1 AND \"users\".\"age\" > $2 ORDER BY \"users\".\"id\" DESC LIMIT 10 OFFSET 5",
     )
     assert_eq_int(compiled.params.len(), 2)
-    assert_eq_str(must_some(compiled.params[0]), "true")
+    assert_eq_str(must_some(compiled.params[0]), "1")
     assert_eq_str(must_some(compiled.params[1]), "17")
     assert_eq_str(compiled.columns[0], "id")
     assert_eq_str(compiled.columns[1], "display_name")
@@ -171,7 +171,7 @@ fun test_update_numbers_conditions_after_assignments() {
         "UPDATE \"users\" SET \"name\" = $1, \"active\" = $2 WHERE \"id\" = $3",
     )
     assert_eq_str(must_some(compiled.params[0]), "Grace")
-    assert_eq_str(must_some(compiled.params[1]), "false")
+    assert_eq_str(must_some(compiled.params[1]), "0")
     assert_eq_str(must_some(compiled.params[2]), "7")
 }
 
@@ -211,6 +211,21 @@ fun test_invalid_builder_states_return_errors() {
         Ok(value) -> assert_msg(false, "negative limit unexpectedly compiled"),
         Err(e) -> assert_msg(e.message().contains("limit cannot be negative"), e.message()),
     }
+}
+
+fun test_offset_without_limit_compiles_for_each_dialect() {
+    assert_eq_str(
+        must(select("events").offset(5).compile(Dialect.Postgres)).sql,
+        "SELECT * FROM \"events\" OFFSET 5",
+    )
+    assert_eq_str(
+        must(select("events").offset(5).compile(Dialect.MySql)).sql,
+        "SELECT * FROM `events` LIMIT 18446744073709551615 OFFSET 5",
+    )
+    assert_eq_str(
+        must(select("events").offset(5).compile(Dialect.Sqlite)).sql,
+        "SELECT * FROM \"events\" LIMIT -1 OFFSET 5",
+    )
 }
 
 fun test_row_supports_indexed_and_named_access() {
