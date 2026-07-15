@@ -5,7 +5,7 @@ import "github.com/martian56/raven-mysql" { connect as connect_mysql }
 import "github.com/martian56/raven-postgres" { connect as connect_postgres }
 import std/error { error_kind }
 import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
-import "./lib" { Executor, QueryResult, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, select, text, transaction, update, update_all }
+import "./lib" { Executor, QueryResult, Value, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, raw_query, select, text, transaction, update, update_all }
 import "./migrations" { Migration, migrate, migration, rollback_last }
 import "./mysql" { mysql }
 import "./postgres" { postgres }
@@ -165,6 +165,62 @@ fun test_sqlite_adapter_keeps_hostile_values_out_of_sql() {
     assert_eq_int(notes.row_count(), 1)
     assert_eq_str(notes.rows[0].get(0), hostile)
     db.close()
+}
+
+fun test_sqlite_adapter_surfaces_failures_and_remains_reusable() {
+    let connection = must_open_sqlite(":memory:")
+    let _ = connection.exec(
+        "CREATE TABLE unique_users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE)",
+    )
+    let db = sqlite(connection)
+    let _ = must_result(insert_one(db, insert_into("unique_users").value("name", text("Ada"))))
+
+    match insert_one(db, insert_into("unique_users").value("name", text("Ada"))) {
+        Ok(_) -> assert_msg(false, "duplicate value unexpectedly succeeded"),
+        Err(e) -> assert_msg(e.message().contains("UNIQUE"), e.message()),
+    }
+
+    let no_params: List<Option<String>> = []
+    let one_column: List<String> = ["value"]
+    match db.run(raw_query("SELECT ?", no_params, one_column, true)) {
+        Ok(_) -> assert_msg(false, "wrong parameter count unexpectedly succeeded"),
+        Err(e) -> assert_msg(e.message().contains("expected 1 parameters"), e.message()),
+    }
+
+    // Both failures finalize their statements, so the same connection can be
+    // used immediately and closed cleanly.
+    assert_eq_int(must_result(fetch_all(db, select("unique_users"))).row_count(), 1)
+    let discover_columns: List<String> = []
+    let discovered = must_result(
+        db.run(raw_query("SELECT 7 AS answer", no_params, discover_columns, true)),
+    )
+    assert_eq_str(string_or(discovered.rows[0].get_named("answer"), "missing"), "7")
+    let _ = must_result(db.try_close())
+}
+
+fun test_sqlite_returning_and_empty_membership_end_to_end() {
+    let connection = must_open_sqlite(":memory:")
+    let _ = connection.exec(
+        "CREATE TABLE people (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)",
+    )
+    let db = sqlite(connection)
+    let inserted = must_result(
+        insert_one(
+            db,
+            insert_into("people").value("name", text("Ada")).returning("id").returning("name"),
+        ),
+    )
+    assert_eq_str(string_or(inserted.rows[0].get_named("id"), "missing"), "1")
+    assert_eq_str(string_or(inserted.rows[0].get_named("name"), "missing"), "Ada")
+    let _ = must_result(insert_one(db, insert_into("people").value("name", text("Grace"))))
+
+    let none: List<Value> = []
+    assert_eq_int(must_result(fetch_all(db, select("people").where_in("id", none))).row_count(), 0)
+    assert_eq_int(
+        must_result(fetch_all(db, select("people").where_not_in("id", none))).row_count(),
+        2,
+    )
+    let _ = must_result(db.try_close())
 }
 
 fun postgres_port() -> Int {
