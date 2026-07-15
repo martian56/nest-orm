@@ -1,5 +1,7 @@
 # Nest ORM
 
+[![CI](https://github.com/martian56/nest-orm/actions/workflows/ci.yml/badge.svg)](https://github.com/martian56/nest-orm/actions/workflows/ci.yml)
+
 Nest is a database-neutral ORM and safe SQL toolkit for the
 [Raven programming language](https://github.com/martian56/raven). It provides
 one query, result, model, and migration API over PostgreSQL, MySQL, and SQLite.
@@ -43,7 +45,7 @@ Nest currently depends on version `v0.2.0` of all three Raven database drivers.
 
 ## Quick start with SQLite
 
-```raven
+```rust
 import "github.com/martian56/raven-sqlite" { Db }
 import "github.com/martian56/nest-orm" {
     fetch_all,
@@ -80,7 +82,7 @@ fun main() {
 
 Use the corresponding adapter for a server connection:
 
-```raven
+```rust
 import "github.com/martian56/nest-orm/postgres" { postgres }
 import "github.com/martian56/nest-orm/mysql" { mysql }
 
@@ -101,7 +103,7 @@ arbitrary SQL syntax.
 Passing `null()` to `where_eq` or `where_not_eq` produces `IS NULL` or
 `IS NOT NULL`; ordered comparisons with NULL are rejected as mistakes.
 
-```raven
+```rust
 let query = select("users")
     .column("users.id")
     .column_as("users.name", "display_name")
@@ -117,7 +119,7 @@ let users = fetch_all(db, query)?
 
 Writes use the same typed values:
 
-```raven
+```rust
 let inserted = insert_one(
     db,
     insert_into("users")
@@ -137,7 +139,7 @@ let deleted = delete_all(db, delete_from("users").where_eq("id", integer(7)))?
 field reports changed rows. `last_insert_id` is populated by MySQL and SQLite.
 PostgreSQL and SQLite can return generated values in the same round trip:
 
-```raven
+```rust
 let inserted = insert_one(
     db,
     insert_into("users").value("name", text("Ada")).returning("id"),
@@ -153,7 +155,7 @@ query compilation, and MySQL-generated ids remain available as
 
 Use `transaction` to commit a successful closure or roll back its error:
 
-```raven
+```rust
 let result = transaction(db, fun(tx: Sqlite) -> Result<QueryResult, Error> =
     insert_one(tx, insert_into("users").value("name", text("Grace")))
 )?
@@ -176,7 +178,7 @@ either mode.
 Raven models implement `FromRow`. This makes field conversion explicit and
 compile-time checked today, while leaving room for a derive macro later.
 
-```raven
+```rust
 struct User {
     id: Int,
     name: String,
@@ -203,7 +205,7 @@ errors. `get` and `get_named` remain available when raw text access is useful.
 Migration definitions are ordinary Raven values, so a compiled migration
 program contains its complete schema history:
 
-```raven
+```rust
 import "github.com/martian56/nest-orm/migrations" { migrate, migration }
 
 let migrations = [
@@ -236,7 +238,7 @@ Nest needing runtime plugin discovery.
 
 An adapter wraps its driver connection and implements two methods:
 
-```raven
+```rust
 trait Executor {
     fun dialect(self) -> Dialect
     fun run(self, query: CompiledQuery) -> Result<QueryResult, Error>
