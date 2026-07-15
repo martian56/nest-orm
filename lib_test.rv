@@ -42,7 +42,7 @@ fun test_select_compiles_postgres_query() {
         "SELECT \"users\".\"id\", \"users\".\"name\" AS \"display_name\" FROM \"users\" LEFT JOIN \"profiles\" ON \"users\".\"id\" = \"profiles\".\"user_id\" WHERE \"users\".\"active\" = $1 AND \"users\".\"age\" > $2 ORDER BY \"users\".\"id\" DESC LIMIT 10 OFFSET 5",
     )
     assert_eq_int(compiled.params.len(), 2)
-    assert_eq_str(must_some(compiled.params[0]), "true")
+    assert_eq_str(must_some(compiled.params[0]), "1")
     assert_eq_str(must_some(compiled.params[1]), "17")
     assert_eq_str(compiled.columns[0], "id")
     assert_eq_str(compiled.columns[1], "display_name")
@@ -77,6 +77,24 @@ fun test_select_star_and_null_predicates() {
     assert_eq_int(compiled.params.len(), 0)
 }
 
+fun test_null_values_compile_to_null_predicates() {
+    let compiled = must(
+        select("events").where_eq("deleted_at", null()).where_not_eq("published_at", null()).compile(
+            Dialect.Postgres,
+        ),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "SELECT * FROM \"events\" WHERE \"deleted_at\" IS NULL AND \"published_at\" IS NOT NULL",
+    )
+    assert_eq_int(compiled.params.len(), 0)
+
+    match select("events").where_gt("created_at", null()).compile(Dialect.Postgres) {
+        Ok(_) -> assert_msg(false, "ordered NULL comparison unexpectedly compiled"),
+        Err(e) -> assert_msg(e.message().contains("NULL"), e.message()),
+    }
+}
+
 fun test_where_in_compiles_with_placeholders() {
     let status: List<Value> = [text("active"), text("pending")]
     let roles: List<Value> = [text("admin")]
@@ -92,11 +110,15 @@ fun test_where_in_compiles_with_placeholders() {
     assert_eq_int(compiled.params.len(), 3)
     assert_eq_str(must_some(compiled.params[0]), "active")
 
-    // An empty IN list can never match and emits no parameters.
+    // Empty membership lists compile to their logical constants and emit no
+    // parameters: membership matches nothing, exclusion keeps every row.
     let none: List<Value> = []
     let empty = must(select("t").where_in("x", none).compile(Dialect.Sqlite))
-    assert_eq_str(empty.sql, "SELECT * FROM \"t\" WHERE \"x\" IN (NULL)")
+    assert_eq_str(empty.sql, "SELECT * FROM \"t\" WHERE 1 = 0")
     assert_eq_int(empty.params.len(), 0)
+    let empty_exclusion = must(select("t").where_not_in("x", none).compile(Dialect.Sqlite))
+    assert_eq_str(empty_exclusion.sql, "SELECT * FROM \"t\" WHERE 1 = 1")
+    assert_eq_int(empty_exclusion.params.len(), 0)
 }
 
 fun test_insert_returning_is_postgres_and_sqlite_only() {
@@ -149,7 +171,7 @@ fun test_update_numbers_conditions_after_assignments() {
         "UPDATE \"users\" SET \"name\" = $1, \"active\" = $2 WHERE \"id\" = $3",
     )
     assert_eq_str(must_some(compiled.params[0]), "Grace")
-    assert_eq_str(must_some(compiled.params[1]), "false")
+    assert_eq_str(must_some(compiled.params[1]), "0")
     assert_eq_str(must_some(compiled.params[2]), "7")
 }
 
@@ -189,6 +211,21 @@ fun test_invalid_builder_states_return_errors() {
         Ok(value) -> assert_msg(false, "negative limit unexpectedly compiled"),
         Err(e) -> assert_msg(e.message().contains("limit cannot be negative"), e.message()),
     }
+}
+
+fun test_offset_without_limit_compiles_for_each_dialect() {
+    assert_eq_str(
+        must(select("events").offset(5).compile(Dialect.Postgres)).sql,
+        "SELECT * FROM \"events\" OFFSET 5",
+    )
+    assert_eq_str(
+        must(select("events").offset(5).compile(Dialect.MySql)).sql,
+        "SELECT * FROM `events` LIMIT 18446744073709551615 OFFSET 5",
+    )
+    assert_eq_str(
+        must(select("events").offset(5).compile(Dialect.Sqlite)).sql,
+        "SELECT * FROM \"events\" LIMIT -1 OFFSET 5",
+    )
 }
 
 fun test_row_supports_indexed_and_named_access() {

@@ -57,9 +57,9 @@ impl Value {
             Decimal(value) -> Some("${value}"),
             Boolean(value) -> {
                 if value {
-                    Some("true")
+                    Some("1")
                 } else {
-                    Some("false")
+                    Some("0")
                 }
             },
         }
@@ -431,7 +431,18 @@ impl SelectQuery {
                 if count < 0 {
                     return Err(error_kind("nest", "offset cannot be negative"))
                 }
-                sql = sql.concat(" OFFSET ${count}")
+                match self.limit_value {
+                    Some(_) -> {
+                        sql = sql.concat(" OFFSET ${count}")
+                    },
+                    None -> {
+                        sql = match dialect {
+                            Postgres -> sql.concat(" OFFSET ${count}"),
+                            MySql -> sql.concat(" LIMIT 18446744073709551615 OFFSET ${count}"),
+                            Sqlite -> sql.concat(" LIMIT -1 OFFSET ${count}"),
+                        }
+                    },
+                }
             },
             None -> {},
         }
@@ -634,12 +645,30 @@ fun no_values() -> List<Value> {
     return values
 }
 
+fun is_null_value(value: Value) -> Bool {
+    return match value {
+        Null -> true,
+        Text(_) -> false,
+        Integer(_) -> false,
+        Decimal(_) -> false,
+        Boolean(_) -> false,
+    }
+}
+
 fun value_condition(
     connector: String,
     column: String,
     operator: String,
     value: Value,
 ) -> Condition {
+    if is_null_value(value) {
+        if operator == "=" {
+            return null_condition(connector, column, "IS NULL")
+        }
+        if operator == "<>" {
+            return null_condition(connector, column, "IS NOT NULL")
+        }
+    }
     return Condition { connector, column, operator, value: Some(value), values: no_values() }
 }
 
@@ -671,14 +700,19 @@ fun compile_conditions(
         } else {
             sql = sql.concat(" ${condition.connector} ")
         }
-        sql = sql.concat(quote_identifier(condition.column, dialect)?)
-        sql = sql.concat(" ").concat(condition.operator)
-        if condition.operator == "IN" || condition.operator == "NOT IN" {
-            // An empty list can never match, so IN (NULL) yields no rows rather
-            // than the invalid IN ().
-            if condition.values.len() == 0 {
-                sql = sql.concat(" (NULL)")
+        let list_condition = condition.operator == "IN" || condition.operator == "NOT IN"
+        if list_condition && condition.values.len() == 0 {
+            // Empty membership predicates are constants. This also preserves
+            // the useful identity that excluding an empty list keeps all rows.
+            if condition.operator == "IN" {
+                sql = sql.concat("1 = 0")
             } else {
+                sql = sql.concat("1 = 1")
+            }
+        } else {
+            sql = sql.concat(quote_identifier(condition.column, dialect)?)
+            sql = sql.concat(" ").concat(condition.operator)
+            if list_condition {
                 sql = sql.concat(" (")
                 let j = 0
                 while j < condition.values.len() {
@@ -690,14 +724,21 @@ fun compile_conditions(
                     j = j + 1
                 }
                 sql = sql.concat(")")
-            }
-        } else {
-            match condition.value {
-                Some(value) -> {
-                    sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
-                    params.push(value.parameter())
-                },
-                None -> {},
+            } else {
+                match condition.value {
+                    Some(value) -> {
+                        match value.parameter() {
+                            Some(parameter) -> {
+                                sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
+                                params.push(Some(parameter))
+                            },
+                            None -> {
+                                return Err(error_kind("nest", "NULL can only be compared with equality predicates"))
+                            },
+                        }
+                    },
+                    None -> {},
+                }
             }
         }
         i = i + 1

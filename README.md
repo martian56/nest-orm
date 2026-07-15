@@ -9,7 +9,7 @@ database libraries.
 Nest is under active initial development. It requires Raven 2.26.1 or later (the
 transaction helper passes a closure whose parameter is typed with the adapter,
 which earlier compilers could not resolve). The current foundation is tested end
-to end with Raven 2.26.1, PostgreSQL 17, MySQL 8.0.43, and bundled SQLite.
+to end with Raven 2.26.1, PostgreSQL 16 and 17, MySQL 8.0.43, and bundled SQLite.
 
 ## What works
 
@@ -17,7 +17,8 @@ to end with Raven 2.26.1, PostgreSQL 17, MySQL 8.0.43, and bundled SQLite.
 - PostgreSQL, MySQL, and SQLite dialect-specific placeholders and identifier
   quoting.
 - INNER and LEFT joins, aliases, predicates, ordering, limits, and offsets.
-- IN and NOT IN predicates with parameterized lists (an empty list matches nothing).
+- IN and NOT IN predicates with parameterized lists. Empty `IN` matches nothing;
+  empty `NOT IN` keeps every row.
 - INSERT ... RETURNING on PostgreSQL and SQLite to read generated columns.
 - Transactions: begin, commit, rollback, and a transaction() helper that commits
   on success and rolls back on error.
@@ -31,14 +32,14 @@ to end with Raven 2.26.1, PostgreSQL 17, MySQL 8.0.43, and bundled SQLite.
 
 ## Install
 
-When the first Nest release is published, add it to `rv.toml`:
+Add Nest to `rv.toml`:
 
 ```toml
 [dependencies]
-"github.com/martian56/nest-orm" = "v0.1.0"
+"github.com/martian56/nest-orm" = "v0.2.0"
 ```
 
-Nest currently depends on version `v0.1.0` of all three Raven database drivers.
+Nest currently depends on version `v0.2.0` of all three Raven database drivers.
 
 ## Quick start with SQLite
 
@@ -88,12 +89,17 @@ let my = mysql(mysql_connection)
 ```
 
 The adapters own their connection wrapper. Call `db.close()` when finished.
+The SQLite adapter also exposes `db.try_close()` when shutdown failures need to
+be handled explicitly.
 
 ## Query builders
 
 Values are always sent through driver parameters. Nest validates and quotes
 identifiers separately, so neither values nor identifiers can silently become
 arbitrary SQL syntax.
+
+Passing `null()` to `where_eq` or `where_not_eq` produces `IS NULL` or
+`IS NOT NULL`; ordered comparisons with NULL are rejected as mistakes.
 
 ```raven
 let query = select("users")
@@ -128,9 +134,42 @@ let deleted = delete_all(db, delete_from("users").where_eq("id", integer(7)))?
 ```
 
 `inserted`, `changed`, and `deleted` are `QueryResult` values. Their `affected`
-field reports changed rows. `last_insert_id` is populated by MySQL and SQLite;
-PostgreSQL applications should select generated values with an explicit query
-until Nest adds RETURNING support.
+field reports changed rows. `last_insert_id` is populated by MySQL and SQLite.
+PostgreSQL and SQLite can return generated values in the same round trip:
+
+```raven
+let inserted = insert_one(
+    db,
+    insert_into("users").value("name", text("Ada")).returning("id"),
+)?
+let id = inserted.rows[0].int_named("id")?
+```
+
+MySQL does not support `INSERT ... RETURNING`; Nest reports that combination at
+query compilation, and MySQL-generated ids remain available as
+`last_insert_id`.
+
+## Transactions
+
+Use `transaction` to commit a successful closure or roll back its error:
+
+```raven
+let result = transaction(db, fun(tx: Sqlite) -> Result<QueryResult, Error> =
+    insert_one(tx, insert_into("users").value("name", text("Grace")))
+)?
+```
+
+`begin`, `commit`, and `rollback` are also public for explicit control. The
+helper preserves the closure's original error if its best-effort rollback also
+fails.
+
+## MySQL SQL modes
+
+The default `mysql(connection)` adapter matches MySQL's standard string-literal
+rules. If the connection session enables `NO_BACKSLASH_ESCAPES`, construct it
+with `mysql_no_backslash_escapes(connection)` so placeholders inside raw SQL are
+scanned with the same rules. Builder-generated queries remain parameterized in
+either mode.
 
 ## Model mapping
 
@@ -182,6 +221,8 @@ let report = migrate(db, migrations)?
 Nest creates `nest_migrations`, applies only missing versions, and requires the
 input list to contain unique positive versions in increasing order.
 `rollback_last(db, migrations)` reverts the latest applied migration.
+Nest rejects an applied migration whose version is missing from the compiled
+history or whose name changed, preventing silent history drift.
 
 PostgreSQL and SQLite migrations run in a transaction. MySQL automatically
 commits many DDL statements, so Nest records a MySQL migration only after all
@@ -235,11 +276,8 @@ shell script to keep the database containers running after tests.
 
 - Values use the text parameter formats exposed by the three current drivers.
 - Results are collected in memory; streaming cursors are not implemented.
-- SQLite wildcard/raw-query columns use generated names when the underlying
-  driver cannot expose column labels. Explicit `.column(...)` selections have
-  stable names.
-- PostgreSQL RETURNING, upserts, aggregates, subqueries, connection pools,
-  relations, eager loading, and derive-generated model mappings are planned.
+- Upserts, aggregates, subqueries, connection pools, relations, eager loading,
+  and derive-generated model mappings are not implemented yet.
 - Migration SQL is intentionally explicit because column types and many DDL
   operations differ across databases.
 

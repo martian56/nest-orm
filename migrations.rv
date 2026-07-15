@@ -118,6 +118,35 @@ fun contains_version(applied: List<AppliedMigration>, version: Int) -> Bool {
     return false
 }
 
+fun validate_applied_history(
+    applied: List<AppliedMigration>,
+    migrations: List<Migration>,
+) -> Result<Bool, Error> {
+    for record in applied {
+        match find_migration(migrations, record.version) {
+            Some(item) -> {
+                if item.name != record.name {
+                    return Err(
+                        error_kind(
+                            "nest",
+                            "migration ${record.version} is named '${record.name}' in the database but '${item.name}' in code",
+                        ),
+                    )
+                }
+            },
+            None -> {
+                return Err(
+                    error_kind(
+                        "nest",
+                        "applied migration ${record.version} is missing from the migration list",
+                    ),
+                )
+            },
+        }
+    }
+    return Ok(true)
+}
+
 fun transactional_ddl(dialect: Dialect) -> Bool {
     return match dialect {
         Postgres -> true,
@@ -174,6 +203,7 @@ fun migrate<T: Executor>(
     let _ = validate_migrations(migrations)?
     let _ = ensure_migration_table(executor)?
     let applied_before = applied_migrations(executor)?
+    let _ = validate_applied_history(applied_before, migrations)?
     let applied: List<Int> = []
     let skipped = 0
     for item in migrations {

@@ -14,8 +14,15 @@ fun sqlite(connection: SqliteDb) -> Sqlite {
 }
 
 impl Sqlite {
+    fun try_close(self) -> Result<Bool, Error> {
+        return match self.connection.try_close() {
+            Ok(closed) -> Ok(closed),
+            Err(message) -> Err(error_kind("sqlite", message)),
+        }
+    }
+
     fun close(self) {
-        self.connection.close()
+        let _ = self.try_close()
     }
 }
 
@@ -24,12 +31,34 @@ impl Executor for Sqlite {
 
     fun run(self, query: CompiledQuery) -> Result<NestQueryResult, Error> {
         let statement = prepare_sqlite(self.connection, query.sql)?
-        bind_sqlite(statement, query.params)
-        if query.returns_rows {
-            return Ok(read_sqlite_rows(self.connection, statement, query.columns))
+        match bind_sqlite(statement, query.params) {
+            Ok(_) -> {},
+            Err(e) -> {
+                finalize_sqlite_quietly(statement)
+                return Err(e)
+            },
         }
-        let _ = statement.step()
-        statement.finalize()
+        if query.returns_rows {
+            return read_sqlite_rows(self.connection, statement, query.columns)
+        }
+        match statement.next() {
+            Ok(has_row) -> {
+                if has_row {
+                    finalize_sqlite_quietly(statement)
+                    return Err(error_kind("sqlite", "query returned rows but was not marked as row-returning"))
+                }
+            },
+            Err(message) -> {
+                finalize_sqlite_quietly(statement)
+                return Err(error_kind("sqlite", message))
+            },
+        }
+        match statement.try_finalize() {
+            Ok(_) -> {},
+            Err(message) -> {
+                return Err(error_kind("sqlite", message))
+            },
+        }
         let columns: List<String> = []
         let rows: List<NestRow> = []
         return Ok(
@@ -50,29 +79,52 @@ fun prepare_sqlite(connection: SqliteDb, sql: String) -> Result<SqliteStmt, Erro
     }
 }
 
-fun bind_sqlite(statement: SqliteStmt, params: List<Option<String>>) {
+fun bind_sqlite(statement: SqliteStmt, params: List<Option<String>>) -> Result<Bool, Error> {
+    if params.len() != statement.parameter_count() {
+        return Err(
+            error_kind(
+                "sqlite",
+                "expected ${statement.parameter_count()} parameters, got ${params.len()}",
+            ),
+        )
+    }
     let i = 0
     while i < params.len() {
         match params[i] {
             Some(value) -> {
-                let _ = statement.bind_text(i + 1, value)
+                match statement.try_bind_text(i + 1, value) {
+                    Ok(_) -> {},
+                    Err(message) -> {
+                        return Err(error_kind("sqlite", message))
+                    },
+                }
             },
             None -> {
-                let _ = statement.bind_null(i + 1)
+                match statement.try_bind_null(i + 1) {
+                    Ok(_) -> {},
+                    Err(message) -> {
+                        return Err(error_kind("sqlite", message))
+                    },
+                }
             },
         }
         i = i + 1
     }
+    return Ok(true)
+}
+
+fun finalize_sqlite_quietly(statement: SqliteStmt) {
+    let _ = statement.try_finalize()
 }
 
 fun sqlite_columns(statement: SqliteStmt, expected: List<String>) -> List<String> {
-    if expected.len() == statement.column_count() {
+    if expected.len() > 0 && expected.len() == statement.column_count() {
         return expected
     }
     let columns: List<String> = []
     let i = 0
     while i < statement.column_count() {
-        columns.push("column_${i}")
+        columns.push(statement.column_name(i))
         i = i + 1
     }
     return columns
@@ -82,30 +134,66 @@ fun read_sqlite_rows(
     connection: SqliteDb,
     statement: SqliteStmt,
     expected_columns: List<String>,
-) -> NestQueryResult {
+) -> Result<NestQueryResult, Error> {
     let columns = sqlite_columns(statement, expected_columns)
     let rows: List<NestRow> = []
-    while statement.step() {
+    let reading = true
+    while reading {
+        match statement.next() {
+            Ok(has_row) -> {
+                reading = has_row
+            },
+            Err(message) -> {
+                finalize_sqlite_quietly(statement)
+                return Err(error_kind("sqlite", message))
+            },
+        }
+        if !reading {
+            break
+        }
         let values: List<String> = []
         let nulls: List<Bool> = []
         let i = 0
         while i < statement.column_count() {
-            if statement.is_null(i) {
+            let is_null = match statement.try_is_null(i) {
+                Ok(value) -> value,
+                Err(message) -> {
+                    finalize_sqlite_quietly(statement)
+                    return Err(error_kind("sqlite", message))
+                    false
+                },
+            }
+            if is_null {
                 values.push("")
                 nulls.push(true)
             } else {
-                values.push(statement.text(i))
+                let value = match statement.try_text(i) {
+                    Ok(text) -> text,
+                    Err(message) -> {
+                        finalize_sqlite_quietly(statement)
+                        return Err(error_kind("sqlite", message))
+                        ""
+                    },
+                }
+                values.push(value)
                 nulls.push(false)
             }
             i = i + 1
         }
         rows.push(NestRow { columns, values, nulls })
     }
-    statement.finalize()
-    return NestQueryResult {
-        columns,
-        rows,
-        affected: connection.changes(),
-        last_insert_id: connection.last_insert_id(),
+    match statement.try_finalize() {
+        Ok(_) -> {},
+        Err(message) -> {
+            return Err(error_kind("sqlite", message))
+        },
     }
+    return Ok(
+        NestQueryResult {
+            columns,
+            rows,
+            affected: connection.changes(),
+            last_insert_id: connection.last_insert_id(),
+        },
+    )
 }

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17.5-alpine
+    image: ${NEST_POSTGRES_IMAGE:-postgres:17.5-alpine}
     environment:
       POSTGRES_USER: raven
       POSTGRES_PASSWORD: ravenpw
