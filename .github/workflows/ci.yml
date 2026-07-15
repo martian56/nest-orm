@@ -24,7 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: martian56/setup-raven@v1
         with:
           raven-version: "2.26.1"
@@ -44,7 +44,7 @@ jobs:
     env:
       NEST_POSTGRES_IMAGE: postgres:${{ matrix.postgres }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: martian56/setup-raven@v1
         with:
           raven-version: "2.26.1"
