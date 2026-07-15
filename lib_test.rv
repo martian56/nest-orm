@@ -77,6 +77,24 @@ fun test_select_star_and_null_predicates() {
     assert_eq_int(compiled.params.len(), 0)
 }
 
+fun test_null_values_compile_to_null_predicates() {
+    let compiled = must(
+        select("events").where_eq("deleted_at", null()).where_not_eq("published_at", null()).compile(
+            Dialect.Postgres,
+        ),
+    )
+    assert_eq_str(
+        compiled.sql,
+        "SELECT * FROM \"events\" WHERE \"deleted_at\" IS NULL AND \"published_at\" IS NOT NULL",
+    )
+    assert_eq_int(compiled.params.len(), 0)
+
+    match select("events").where_gt("created_at", null()).compile(Dialect.Postgres) {
+        Ok(_) -> assert_msg(false, "ordered NULL comparison unexpectedly compiled"),
+        Err(e) -> assert_msg(e.message().contains("NULL"), e.message()),
+    }
+}
+
 fun test_where_in_compiles_with_placeholders() {
     let status: List<Value> = [text("active"), text("pending")]
     let roles: List<Value> = [text("admin")]

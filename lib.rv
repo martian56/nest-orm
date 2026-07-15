@@ -634,12 +634,30 @@ fun no_values() -> List<Value> {
     return values
 }
 
+fun is_null_value(value: Value) -> Bool {
+    return match value {
+        Null -> true,
+        Text(_) -> false,
+        Integer(_) -> false,
+        Decimal(_) -> false,
+        Boolean(_) -> false,
+    }
+}
+
 fun value_condition(
     connector: String,
     column: String,
     operator: String,
     value: Value,
 ) -> Condition {
+    if is_null_value(value) {
+        if operator == "=" {
+            return null_condition(connector, column, "IS NULL")
+        }
+        if operator == "<>" {
+            return null_condition(connector, column, "IS NOT NULL")
+        }
+    }
     return Condition { connector, column, operator, value: Some(value), values: no_values() }
 }
 
@@ -698,8 +716,15 @@ fun compile_conditions(
             } else {
                 match condition.value {
                     Some(value) -> {
-                        sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
-                        params.push(value.parameter())
+                        match value.parameter() {
+                            Some(parameter) -> {
+                                sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
+                                params.push(Some(parameter))
+                            },
+                            None -> {
+                                return Err(error_kind("nest", "NULL can only be compared with equality predicates"))
+                            },
+                        }
                     },
                     None -> {},
                 }
