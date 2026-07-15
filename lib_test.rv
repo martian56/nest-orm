@@ -92,11 +92,15 @@ fun test_where_in_compiles_with_placeholders() {
     assert_eq_int(compiled.params.len(), 3)
     assert_eq_str(must_some(compiled.params[0]), "active")
 
-    // An empty IN list can never match and emits no parameters.
+    // Empty membership lists compile to their logical constants and emit no
+    // parameters: membership matches nothing, exclusion keeps every row.
     let none: List<Value> = []
     let empty = must(select("t").where_in("x", none).compile(Dialect.Sqlite))
-    assert_eq_str(empty.sql, "SELECT * FROM \"t\" WHERE \"x\" IN (NULL)")
+    assert_eq_str(empty.sql, "SELECT * FROM \"t\" WHERE 1 = 0")
     assert_eq_int(empty.params.len(), 0)
+    let empty_exclusion = must(select("t").where_not_in("x", none).compile(Dialect.Sqlite))
+    assert_eq_str(empty_exclusion.sql, "SELECT * FROM \"t\" WHERE 1 = 1")
+    assert_eq_int(empty_exclusion.params.len(), 0)
 }
 
 fun test_insert_returning_is_postgres_and_sqlite_only() {

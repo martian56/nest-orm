@@ -671,14 +671,19 @@ fun compile_conditions(
         } else {
             sql = sql.concat(" ${condition.connector} ")
         }
-        sql = sql.concat(quote_identifier(condition.column, dialect)?)
-        sql = sql.concat(" ").concat(condition.operator)
-        if condition.operator == "IN" || condition.operator == "NOT IN" {
-            // An empty list can never match, so IN (NULL) yields no rows rather
-            // than the invalid IN ().
-            if condition.values.len() == 0 {
-                sql = sql.concat(" (NULL)")
+        let list_condition = condition.operator == "IN" || condition.operator == "NOT IN"
+        if list_condition && condition.values.len() == 0 {
+            // Empty membership predicates are constants. This also preserves
+            // the useful identity that excluding an empty list keeps all rows.
+            if condition.operator == "IN" {
+                sql = sql.concat("1 = 0")
             } else {
+                sql = sql.concat("1 = 1")
+            }
+        } else {
+            sql = sql.concat(quote_identifier(condition.column, dialect)?)
+            sql = sql.concat(" ").concat(condition.operator)
+            if list_condition {
                 sql = sql.concat(" (")
                 let j = 0
                 while j < condition.values.len() {
@@ -690,14 +695,14 @@ fun compile_conditions(
                     j = j + 1
                 }
                 sql = sql.concat(")")
-            }
-        } else {
-            match condition.value {
-                Some(value) -> {
-                    sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
-                    params.push(value.parameter())
-                },
-                None -> {},
+            } else {
+                match condition.value {
+                    Some(value) -> {
+                        sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
+                        params.push(value.parameter())
+                    },
+                    None -> {},
+                }
             }
         }
         i = i + 1
