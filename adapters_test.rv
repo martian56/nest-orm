@@ -7,8 +7,8 @@ import std/error { error_kind }
 import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
 import "./lib" { Executor, QueryResult, Value, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, raw_query, select, text, transaction, update, update_all }
 import "./migrations" { Migration, migrate, migration, rollback_last }
-import "./mysql" { mysql }
-import "./postgres" { postgres }
+import "./mysql" { MySql, mysql, mysql_no_backslash_escapes }
+import "./postgres" { Postgres, postgres }
 import "./sqlite" { Sqlite, sqlite }
 
 fun must_result<T>(result: Result<T, Error>) -> T {
@@ -257,15 +257,17 @@ fun test_postgres_adapter_end_to_end() {
         ),
     )
     let db = postgres(connection)
-    assert_eq_int(
-        must_result(
-            insert_one(
-                db,
-                insert_into("nest_users").value("name", text("Ada")).value("nickname", null()),
-            ),
-        ).affected,
-        1,
+    let inserted = must_result(
+        insert_one(
+            db,
+            insert_into("nest_users").value("name", text("Ada")).value("nickname", null()).returning(
+                "id",
+            ).returning("name"),
+        ),
     )
+    assert_eq_int(inserted.affected, 1)
+    assert_eq_str(string_or(inserted.rows[0].get_named("id"), "missing"), "1")
+    assert_eq_str(string_or(inserted.rows[0].get_named("name"), "missing"), "Ada")
     let rows = must_result(
         fetch_all(
             db,
@@ -278,6 +280,29 @@ fun test_postgres_adapter_end_to_end() {
     assert_eq_int(rows.row_count(), 1)
     assert_eq_str(string_or(rows.rows[0].get_named("name"), "missing"), "Ada")
     assert_true(rows.rows[0].is_null_named("nickname"))
+    let _ = must_result(
+        transaction(
+            db,
+            fun(tx: Postgres) -> Result<QueryResult, Error> = insert_one(
+                tx,
+                insert_into("nest_users").value("name", text("Grace")),
+            ),
+        ),
+    )
+    match transaction(
+        db,
+        fun(tx: Postgres) -> Result<QueryResult, Error> = match insert_one(
+            tx,
+            insert_into("nest_users").value("name", text("Hopper")),
+        ) {
+            Ok(_) -> Err(error_kind("test", "rollback")),
+            Err(inner) -> Err(inner),
+        },
+    ) {
+        Ok(_) -> assert_msg(false, "PostgreSQL rollback transaction unexpectedly succeeded"),
+        Err(_) -> assert_true(true),
+    }
+    assert_eq_int(must_result(fetch_all(db, select("nest_users"))).row_count(), 2)
     let _ = must_result(delete_all(db, delete_from("nest_users").where_eq("name", text("Ada"))))
     verify_live_migrations(db)
     let _ = must_result(db.connection.execute("DROP TABLE nest_users"))
@@ -333,6 +358,46 @@ fun test_mysql_adapter_end_to_end() {
         ),
         "Augusta",
     )
+    let _ = must_result(
+        transaction(
+            db,
+            fun(tx: MySql) -> Result<QueryResult, Error> = insert_one(
+                tx,
+                insert_into("nest_users").value("name", text("Grace")),
+            ),
+        ),
+    )
+    match transaction(
+        db,
+        fun(tx: MySql) -> Result<QueryResult, Error> = match insert_one(
+            tx,
+            insert_into("nest_users").value("name", text("Hopper")),
+        ) {
+            Ok(_) -> Err(error_kind("test", "rollback")),
+            Err(inner) -> Err(inner),
+        },
+    ) {
+        Ok(_) -> assert_msg(false, "MySQL rollback transaction unexpectedly succeeded"),
+        Err(_) -> assert_true(true),
+    }
+    assert_eq_int(must_result(fetch_all(db, select("nest_users"))).row_count(), 2)
+
+    let _ = must_result(db.connection.execute("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'"))
+    let mode_db = mysql_no_backslash_escapes(db.connection)
+    let raw_params: List<Option<String>> = [Some("safe")]
+    let raw_columns: List<String> = ["literal_value", "bound_value"]
+    let raw = must_result(
+        mode_db.run(
+            raw_query(
+                "SELECT 'backslash\\' AS literal_value, ? AS bound_value",
+                raw_params,
+                raw_columns,
+                true,
+            ),
+        ),
+    )
+    assert_eq_str(raw.rows[0].get(0), "backslash\\")
+    assert_eq_str(raw.rows[0].get(1), "safe")
     verify_live_migrations(db)
     let _ = must_result(db.connection.execute("DROP TABLE nest_users"))
     db.close()
