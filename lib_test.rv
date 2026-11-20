@@ -1,30 +1,30 @@
-import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
-import "./lib" { CompiledQuery, Dialect, Executor, FromRow, QueryResult, Row, Value, boolean, delete_from, fetch_all, insert_into, integer, map_rows, null, quote_identifier, select, text, update }
+from std.test import assert_eq_int, assert_eq_str, assert_msg, assert_true
+from "./lib" import CompiledQuery, Dialect, Executor, FromRow, QueryResult, Row, Value, boolean, delete_from, fetch_all, insert_into, integer, map_rows, null, quote_identifier, select, text, update
 
-fun must<T>(result: Result<T, Error>) -> T {
+fun must[T](result: Result[T, Error]) -> T {
     return match result {
-        Ok(value) -> value,
-        Err(e) -> {
+        case Ok(value) { value }
+        case Err(e) {
             __panic(e.message())
             must(result)
-        },
+        }
     }
 }
 
-fun must_some(value: Option<String>) -> String {
+fun must_some(value: Option[str]) -> str {
     return match value {
-        Some(inner) -> inner,
-        None -> {
+        case Some(inner) { inner }
+        case None {
             __panic("expected Some(String)")
             ""
-        },
+        }
     }
 }
 
-fun is_none_string(value: Option<String>) -> Bool {
+fun is_none_string(value: Option[str]) -> bool {
     return match value {
-        Some(inner) -> false,
-        None -> true,
+        case Some(inner) { false }
+        case None { true }
     }
 }
 
@@ -90,14 +90,14 @@ fun test_null_values_compile_to_null_predicates() {
     assert_eq_int(compiled.params.len(), 0)
 
     match select("events").where_gt("created_at", null()).compile(Dialect.Postgres) {
-        Ok(_) -> assert_msg(false, "ordered NULL comparison unexpectedly compiled"),
-        Err(e) -> assert_msg(e.message().contains("NULL"), e.message()),
+        case Ok(_) { assert_msg(false, "ordered NULL comparison unexpectedly compiled") }
+        case Err(e) { assert_msg(e.message().contains("NULL"), e.message()) }
     }
 }
 
 fun test_where_in_compiles_with_placeholders() {
-    let status: List<Value> = [text("active"), text("pending")]
-    let roles: List<Value> = [text("admin")]
+    let status: list[Value] = [text("active"), text("pending")]
+    let roles: list[Value] = [text("admin")]
     let compiled = must(
         select("users").column("id").where_in("status", status).where_not_in("role", roles).compile(
             Dialect.Postgres,
@@ -112,7 +112,7 @@ fun test_where_in_compiles_with_placeholders() {
 
     // Empty membership lists compile to their logical constants and emit no
     // parameters: membership matches nothing, exclusion keeps every row.
-    let none: List<Value> = []
+    let none: list[Value] = []
     let empty = must(select("t").where_in("x", none).compile(Dialect.Sqlite))
     assert_eq_str(empty.sql, "SELECT * FROM \"t\" WHERE 1 = 0")
     assert_eq_int(empty.params.len(), 0)
@@ -136,8 +136,8 @@ fun test_insert_returning_is_postgres_and_sqlite_only() {
 
     // MySQL has no RETURNING, so compiling it there is an error.
     match insert_into("users").value("name", text("Ada")).returning("id").compile(Dialect.MySql) {
-        Ok(_) -> assert_msg(false, "MySQL RETURNING should be rejected"),
-        Err(_) -> assert_true(true),
+        case Ok(_) { assert_msg(false, "MySQL RETURNING should be rejected") }
+        case Err(_) { assert_true(true) }
     }
 }
 
@@ -156,7 +156,7 @@ fun test_insert_preserves_value_order_and_null() {
     assert_eq_str(must_some(compiled.params[0]), "Ada")
     assert_eq_str(must_some(compiled.params[1]), "36")
     assert_true(is_none_string(compiled.params[2]))
-    assert_true(!compiled.returns_rows)
+    assert_true(not compiled.returns_rows)
 }
 
 fun test_update_numbers_conditions_after_assignments() {
@@ -189,27 +189,27 @@ fun test_identifiers_are_quoted_and_validated() {
         "\"schema\".\"users\".*",
     )
     match quote_identifier("users; DROP TABLE users", Dialect.Postgres) {
-        Ok(value) -> assert_msg(false, "unsafe identifier unexpectedly compiled"),
-        Err(e) -> assert_eq_str(e.kind(), "nest"),
+        case Ok(value) { assert_msg(false, "unsafe identifier unexpectedly compiled") }
+        case Err(e) { assert_eq_str(e.kind(), "nest") }
     }
     match quote_identifier("9users", Dialect.MySql) {
-        Ok(value) -> assert_msg(false, "digit-prefixed identifier unexpectedly compiled"),
-        Err(e) -> assert_msg(e.message().contains("invalid SQL identifier"), e.message()),
+        case Ok(value) { assert_msg(false, "digit-prefixed identifier unexpectedly compiled") }
+        case Err(e) { assert_msg(e.message().contains("invalid SQL identifier"), e.message()) }
     }
 }
 
 fun test_invalid_builder_states_return_errors() {
     match insert_into("users").compile(Dialect.Sqlite) {
-        Ok(value) -> assert_msg(false, "empty insert unexpectedly compiled"),
-        Err(e) -> assert_msg(e.message().contains("at least one value"), e.message()),
+        case Ok(value) { assert_msg(false, "empty insert unexpectedly compiled") }
+        case Err(e) { assert_msg(e.message().contains("at least one value"), e.message()) }
     }
     match update("users").where_eq("id", integer(1)).compile(Dialect.Sqlite) {
-        Ok(value) -> assert_msg(false, "empty update unexpectedly compiled"),
-        Err(e) -> assert_msg(e.message().contains("at least one assignment"), e.message()),
+        case Ok(value) { assert_msg(false, "empty update unexpectedly compiled") }
+        case Err(e) { assert_msg(e.message().contains("at least one assignment"), e.message()) }
     }
     match select("users").limit(-1).compile(Dialect.Sqlite) {
-        Ok(value) -> assert_msg(false, "negative limit unexpectedly compiled"),
-        Err(e) -> assert_msg(e.message().contains("limit cannot be negative"), e.message()),
+        case Ok(value) { assert_msg(false, "negative limit unexpectedly compiled") }
+        case Err(e) { assert_msg(e.message().contains("limit cannot be negative"), e.message()) }
     }
 }
 
@@ -229,92 +229,77 @@ fun test_offset_without_limit_compiles_for_each_dialect() {
 }
 
 fun test_row_supports_indexed_and_named_access() {
-    let row = Row {
-        columns: ["id", "nickname"],
-        values: ["7", ""],
-        nulls: [false, true],
-    }
+    let row = Row(columns: ["id", "nickname"], values: ["7", ""], nulls: [false, true])
     assert_eq_str(row.get(0), "7")
     assert_eq_str(must_some(row.get_named("id")), "7")
     assert_true(is_none_string(row.get_named("nickname")))
     assert_true(is_none_string(row.get_named("missing")))
     assert_true(row.is_null_named("nickname"))
-    assert_true(!row.is_null_named("missing"))
+    assert_true(not row.is_null_named("missing"))
 }
 
 fun test_row_typed_decoders_report_missing_null_and_invalid_values() {
-    let row = Row {
+    let row = Row(
         columns: ["count", "score", "active", "nickname", "invalid"],
         values: ["42", "9.5", "t", "", "nope"],
         nulls: [false, false, false, true, false],
-    }
+    )
     assert_eq_int(must(row.int_named("count")), 42)
     assert_true(must(row.float_named("score")) > 9.0)
     assert_true(must(row.bool_named("active")))
     assert_true(is_none_string(must(row.optional("nickname"))))
     match row.required("nickname") {
-        Ok(value) -> assert_msg(false, "NULL unexpectedly decoded as required text"),
-        Err(e) -> assert_msg(e.message().contains("is NULL"), e.message()),
+        case Ok(value) { assert_msg(false, "NULL unexpectedly decoded as required text") }
+        case Err(e) { assert_msg(e.message().contains("is NULL"), e.message()) }
     }
     match row.int_named("invalid") {
-        Ok(value) -> assert_msg(false, "invalid integer unexpectedly decoded"),
-        Err(e) -> assert_msg(e.message().contains("not an integer"), e.message()),
+        case Ok(value) { assert_msg(false, "invalid integer unexpectedly decoded") }
+        case Err(e) { assert_msg(e.message().contains("not an integer"), e.message()) }
     }
     match row.required("missing") {
-        Ok(value) -> assert_msg(false, "missing column unexpectedly decoded"),
-        Err(e) -> assert_msg(e.message().contains("is missing"), e.message()),
+        case Ok(value) { assert_msg(false, "missing column unexpectedly decoded") }
+        case Err(e) { assert_msg(e.message().contains("is missing"), e.message()) }
     }
 }
 
-struct RecordingExecutor {
-    expected_sql: String,
+class RecordingExecutor {
+    expected_sql: str
 }
 
 impl Executor for RecordingExecutor {
     fun dialect(self) -> Dialect = Dialect.Postgres
 
-    fun run(self, query: CompiledQuery) -> Result<QueryResult, Error> {
+    fun run(self, query: CompiledQuery) -> Result[QueryResult, Error] {
         assert_eq_str(query.sql, self.expected_sql)
-        let columns: List<String> = []
-        let rows: List<Row> = []
-        return Ok(QueryResult { columns, rows, affected: 0, last_insert_id: 0 })
+        let columns: list[str] = []
+        let rows: list[Row] = []
+        return Ok(QueryResult(columns: columns, rows: rows, affected: 0, last_insert_id: 0))
     }
 }
 
 fun test_executor_contract_is_open_to_third_party_adapters() {
-    let executor = RecordingExecutor {
-        expected_sql: "SELECT \"id\" FROM \"users\" WHERE \"id\" = $1",
-    }
+    let executor = RecordingExecutor(expected_sql: "SELECT \"id\" FROM \"users\" WHERE \"id\" = $1")
     let result = must(fetch_all(executor, select("users").column("id").where_eq("id", integer(1))))
     assert_eq_int(result.row_count(), 0)
 }
 
-struct User {
-    id: Int,
-    name: String,
+class User {
+    id: int
+    name: str
 }
 
 impl FromRow for User {
-    fun from_row(row: Row) -> Result<User, Error> {
+    fun from_row(row: Row) -> Result[User, Error] {
         let id = row.int_named("id")?
         let name = row.required("name")?
-        return Ok(User { id, name })
+        return Ok(User(id: id, name: name))
     }
 }
 
 fun test_query_results_map_into_models() {
-    let row = Row {
-        columns: ["id", "name"],
-        values: ["7", "Ada"],
-        nulls: [false, false],
-    }
-    let result = QueryResult {
-        columns: ["id", "name"],
-        rows: [row],
-        affected: 0,
-        last_insert_id: 0,
-    }
-    let users: List<User> = must(map_rows(result))
+    let row = Row(columns: ["id", "name"], values: ["7", "Ada"], nulls: [false, false])
+    let result = QueryResult(columns: ["id", "name"], rows: [row], affected: 0, last_insert_id: 0)
+    let users: list[User] = must(map_rows(result))
     assert_eq_int(users.len(), 1)
     assert_eq_int(users[0].id, 7)
     assert_eq_str(users[0].name, "Ada")

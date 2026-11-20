@@ -1,44 +1,44 @@
-import std/env { get_env_or, has_env }
-import std/string
-import std/test { assert_eq_int, assert_eq_str, assert_msg, assert_true }
-import "github.com/martian56/raven-mysql" { connect as connect_mysql }
-import "github.com/martian56/raven-postgres" { connect as connect_postgres }
-import std/error { error_kind }
-import "github.com/martian56/raven-sqlite" { Db as SqliteDb }
-import "./lib" { Executor, QueryResult, Value, boolean, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, raw_query, select, text, transaction, update, update_all }
-import "./migrations" { Migration, migrate, migration, rollback_last }
-import "./mysql" { MySql, mysql, mysql_no_backslash_escapes }
-import "./postgres" { Postgres, postgres }
-import "./sqlite" { Sqlite, sqlite }
+from std.env import get_env_or, has_env
+import std.string
+from std.test import assert_eq_int, assert_eq_str, assert_msg, assert_true
+from "github.com/martian56/raven-mysql" import connect as connect_mysql
+from "github.com/martian56/raven-postgres" import connect as connect_postgres
+from std.error import error_kind
+from "github.com/martian56/raven-sqlite" import Db as SqliteDb
+from "./lib" import Executor, QueryResult, Value, boolean, delete_all, delete_from, fetch_all, insert_into, insert_one, integer, null, raw_query, select, text, transaction, update, update_all
+from "./migrations" import Migration, migrate, migration, rollback_last
+from "./mysql" import MySql, mysql, mysql_no_backslash_escapes
+from "./postgres" import Postgres, postgres
+from "./sqlite" import Sqlite, sqlite
 
-fun must_result<T>(result: Result<T, Error>) -> T {
+fun must_result[T](result: Result[T, Error]) -> T {
     return match result {
-        Ok(value) -> value,
-        Err(e) -> {
+        case Ok(value) { value }
+        case Err(e) {
             __panic(e.message())
             must_result(result)
-        },
+        }
     }
 }
 
-fun must_open_sqlite(path: String) -> SqliteDb {
+fun must_open_sqlite(path: str) -> SqliteDb {
     return match SqliteDb.open(path) {
-        Ok(db) -> db,
-        Err(message) -> {
+        case Ok(db) { db }
+        case Err(message) {
             __panic(message)
             must_open_sqlite(path)
-        },
+        }
     }
 }
 
-fun string_or(value: Option<String>, fallback: String) -> String {
+fun string_or(value: Option[str], fallback: str) -> str {
     return match value {
-        Some(inner) -> inner,
-        None -> fallback,
+        case Some(inner) { inner }
+        case None { fallback }
     }
 }
 
-fun probe_migrations() -> List<Migration> {
+fun probe_migrations() -> list[Migration] {
     return [
         migration(1001, "create probe").up(
             "CREATE TABLE nest_migration_probe (id BIGINT PRIMARY KEY)",
@@ -46,7 +46,7 @@ fun probe_migrations() -> List<Migration> {
     ]
 }
 
-fun verify_live_migrations<T: Executor>(db: T) {
+fun verify_live_migrations[T: Executor](db: T) {
     let report = must_result(migrate(db, probe_migrations()))
     assert_eq_int(report.applied.len(), 1)
     assert_eq_int(report.applied[0], 1001)
@@ -55,8 +55,8 @@ fun verify_live_migrations<T: Executor>(db: T) {
     assert_eq_int(repeated.skipped, 1)
     let rolled_back = must_result(rollback_last(db, probe_migrations()))
     match rolled_back.rolled_back {
-        Some(version) -> assert_eq_int(version, 1001),
-        None -> assert_msg(false, "expected live migration to roll back"),
+        case Some(version) { assert_eq_int(version, 1001) }
+        case None { assert_msg(false, "expected live migration to roll back") }
     }
 }
 
@@ -65,8 +65,8 @@ fun test_transaction_commits_and_rolls_back() {
     match connection.exec(
         "CREATE TABLE accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)",
     ) {
-        Ok(_) -> {},
-        Err(message) -> __panic(message),
+        case Ok(_) {}
+        case Err(message) { __panic(message) }
     }
     let db = sqlite(connection)
 
@@ -74,7 +74,7 @@ fun test_transaction_commits_and_rolls_back() {
     let _committed = must_result(
         transaction(
             db,
-            fun(tx: Sqlite) -> Result<QueryResult, Error> = insert_one(
+            (tx: Sqlite) -> Result[QueryResult, Error] => insert_one(
                 tx,
                 insert_into("accounts").value("name", text("Ada")),
             ),
@@ -86,17 +86,17 @@ fun test_transaction_commits_and_rolls_back() {
     // is undone and the row count stays at one.
     let outcome = transaction(
         db,
-        fun(tx: Sqlite) -> Result<QueryResult, Error> = match insert_one(
+        (tx: Sqlite) -> Result[QueryResult, Error] => match insert_one(
             tx,
             insert_into("accounts").value("name", text("Grace")),
         ) {
-            Ok(_) -> Err(error_kind("test", "boom")),
-            Err(inner) -> Err(inner),
+            case Ok(_) { Err(error_kind("test", "boom")) }
+            case Err(inner) { Err(inner) }
         },
     )
     match outcome {
-        Ok(_) -> assert_msg(false, "transaction should have failed"),
-        Err(_) -> assert_true(true),
+        case Ok(_) { assert_msg(false, "transaction should have failed") }
+        case Err(_) { assert_true(true) }
     }
     assert_eq_int(must_result(fetch_all(db, select("accounts"))).row_count(), 1)
 }
@@ -106,8 +106,8 @@ fun test_sqlite_adapter_crud_end_to_end() {
     match connection.exec(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, nickname TEXT NULL, active BOOLEAN NOT NULL)",
     ) {
-        Ok(changed) -> {},
-        Err(message) -> __panic(message),
+        case Ok(changed) {}
+        case Err(message) { __panic(message) }
     }
     let db = sqlite(connection)
 
@@ -145,7 +145,7 @@ fun test_sqlite_adapter_crud_end_to_end() {
     assert_eq_str(string_or(users.rows[0].get_named("name"), "missing"), "Ada")
     assert_true(users.rows[0].is_null_named("nickname"))
     assert_true(must_result(users.rows[0].bool_named("active")))
-    assert_true(!must_result(users.rows[1].bool_named("active")))
+    assert_true(not must_result(users.rows[1].bool_named("active")))
     assert_eq_str(users.rows[1].get(2), "Amazing Grace")
 
     let updated = must_result(
@@ -186,21 +186,21 @@ fun test_sqlite_adapter_surfaces_failures_and_remains_reusable() {
     let _ = must_result(insert_one(db, insert_into("unique_users").value("name", text("Ada"))))
 
     match insert_one(db, insert_into("unique_users").value("name", text("Ada"))) {
-        Ok(_) -> assert_msg(false, "duplicate value unexpectedly succeeded"),
-        Err(e) -> assert_msg(e.message().contains("UNIQUE"), e.message()),
+        case Ok(_) { assert_msg(false, "duplicate value unexpectedly succeeded") }
+        case Err(e) { assert_msg(e.message().contains("UNIQUE"), e.message()) }
     }
 
-    let no_params: List<Option<String>> = []
-    let one_column: List<String> = ["value"]
+    let no_params: list[Option[str]] = []
+    let one_column: list[str] = ["value"]
     match db.run(raw_query("SELECT ?", no_params, one_column, true)) {
-        Ok(_) -> assert_msg(false, "wrong parameter count unexpectedly succeeded"),
-        Err(e) -> assert_msg(e.message().contains("expected 1 parameters"), e.message()),
+        case Ok(_) { assert_msg(false, "wrong parameter count unexpectedly succeeded") }
+        case Err(e) { assert_msg(e.message().contains("expected 1 parameters"), e.message()) }
     }
 
     // Both failures finalize their statements, so the same connection can be
     // used immediately and closed cleanly.
     assert_eq_int(must_result(fetch_all(db, select("unique_users"))).row_count(), 1)
-    let discover_columns: List<String> = []
+    let discover_columns: list[str] = []
     let discovered = must_result(
         db.run(raw_query("SELECT 7 AS answer", no_params, discover_columns, true)),
     )
@@ -224,7 +224,7 @@ fun test_sqlite_returning_and_empty_membership_end_to_end() {
     assert_eq_str(string_or(inserted.rows[0].get_named("name"), "missing"), "Ada")
     let _ = must_result(insert_one(db, insert_into("people").value("name", text("Grace"))))
 
-    let none: List<Value> = []
+    let none: list[Value] = []
     assert_eq_int(must_result(fetch_all(db, select("people").where_in("id", none))).row_count(), 0)
     assert_eq_int(
         must_result(fetch_all(db, select("people").where_not_in("id", none))).row_count(),
@@ -233,22 +233,22 @@ fun test_sqlite_returning_and_empty_membership_end_to_end() {
     let _ = must_result(db.try_close())
 }
 
-fun postgres_port() -> Int {
+fun postgres_port() -> int {
     return match get_env_or("NEST_POSTGRES_PORT", "55433").parse_int() {
-        Some(port) -> port,
-        None -> 55433,
+        case Some(port) { port }
+        case None { 55433 }
     }
 }
 
-fun mysql_port() -> Int {
+fun mysql_port() -> int {
     return match get_env_or("NEST_MYSQL_PORT", "33307").parse_int() {
-        Some(port) -> port,
-        None -> 33307,
+        case Some(port) { port }
+        case None { 33307 }
     }
 }
 
 fun test_postgres_adapter_end_to_end() {
-    if !has_env("NEST_POSTGRES_E2E") {
+    if not has_env("NEST_POSTGRES_E2E") {
         return
     }
     let connection = must_result(
@@ -295,7 +295,7 @@ fun test_postgres_adapter_end_to_end() {
     let _ = must_result(
         transaction(
             db,
-            fun(tx: Postgres) -> Result<QueryResult, Error> = insert_one(
+            (tx: Postgres) -> Result[QueryResult, Error] => insert_one(
                 tx,
                 insert_into("nest_users").value("name", text("Grace")),
             ),
@@ -303,16 +303,16 @@ fun test_postgres_adapter_end_to_end() {
     )
     match transaction(
         db,
-        fun(tx: Postgres) -> Result<QueryResult, Error> = match insert_one(
+        (tx: Postgres) -> Result[QueryResult, Error] => match insert_one(
             tx,
             insert_into("nest_users").value("name", text("Hopper")),
         ) {
-            Ok(_) -> Err(error_kind("test", "rollback")),
-            Err(inner) -> Err(inner),
+            case Ok(_) { Err(error_kind("test", "rollback")) }
+            case Err(inner) { Err(inner) }
         },
     ) {
-        Ok(_) -> assert_msg(false, "PostgreSQL rollback transaction unexpectedly succeeded"),
-        Err(_) -> assert_true(true),
+        case Ok(_) { assert_msg(false, "PostgreSQL rollback transaction unexpectedly succeeded") }
+        case Err(_) { assert_true(true) }
     }
     assert_eq_int(must_result(fetch_all(db, select("nest_users"))).row_count(), 2)
     let _ = must_result(delete_all(db, delete_from("nest_users").where_eq("name", text("Ada"))))
@@ -322,7 +322,7 @@ fun test_postgres_adapter_end_to_end() {
 }
 
 fun test_mysql_adapter_end_to_end() {
-    if !has_env("NEST_MYSQL_E2E") {
+    if not has_env("NEST_MYSQL_E2E") {
         return
     }
     let connection = must_result(
@@ -377,7 +377,7 @@ fun test_mysql_adapter_end_to_end() {
     let _ = must_result(
         transaction(
             db,
-            fun(tx: MySql) -> Result<QueryResult, Error> = insert_one(
+            (tx: MySql) -> Result[QueryResult, Error] => insert_one(
                 tx,
                 insert_into("nest_users").value("name", text("Grace")),
             ),
@@ -385,23 +385,23 @@ fun test_mysql_adapter_end_to_end() {
     )
     match transaction(
         db,
-        fun(tx: MySql) -> Result<QueryResult, Error> = match insert_one(
+        (tx: MySql) -> Result[QueryResult, Error] => match insert_one(
             tx,
             insert_into("nest_users").value("name", text("Hopper")),
         ) {
-            Ok(_) -> Err(error_kind("test", "rollback")),
-            Err(inner) -> Err(inner),
+            case Ok(_) { Err(error_kind("test", "rollback")) }
+            case Err(inner) { Err(inner) }
         },
     ) {
-        Ok(_) -> assert_msg(false, "MySQL rollback transaction unexpectedly succeeded"),
-        Err(_) -> assert_true(true),
+        case Ok(_) { assert_msg(false, "MySQL rollback transaction unexpectedly succeeded") }
+        case Err(_) { assert_true(true) }
     }
     assert_eq_int(must_result(fetch_all(db, select("nest_users"))).row_count(), 2)
 
     let _ = must_result(db.connection.execute("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'"))
     let mode_db = mysql_no_backslash_escapes(db.connection)
-    let raw_params: List<Option<String>> = [Some("safe")]
-    let raw_columns: List<String> = ["literal_value", "bound_value"]
+    let raw_params: list[Option[str]] = [Some("safe")]
+    let raw_columns: list[str] = ["literal_value", "bound_value"]
     let raw = must_result(
         mode_db.run(
             raw_query(

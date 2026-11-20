@@ -3,16 +3,16 @@
 // Nest keeps SQL construction independent from database drivers. Queries are
 // compiled for a Dialect and executed by any type implementing Executor.
 
-//   import "github.com/martian56/nest-orm" { select, text, fetch_all }
-//   import "github.com/martian56/nest-orm/sqlite" { sqlite }
+//   from "github.com/martian56/nest-orm" import select, text, fetch_all
+//   from "github.com/martian56/nest-orm/sqlite" import sqlite
 //
 //   let users = fetch_all(sqlite(db), select("users").column("name"))?
 
 // Drivers can live in this repository or in third-party packages. A new
 // backend only needs a small Executor wrapper around its Raven database client.
 
-import std/error { error_kind }
-import std/string
+from std.error import error_kind
+import std.string
 
 enum Dialect {
     Postgres,
@@ -21,19 +21,19 @@ enum Dialect {
 }
 
 impl Dialect {
-    fun placeholder(self, index: Int) -> String {
+    fun placeholder(self, index: int) -> str {
         return match self {
-            Postgres -> "$${index}",
-            MySql -> "?",
-            Sqlite -> "?",
+            case Postgres { "$${index}" }
+            case MySql { "?" }
+            case Sqlite { "?" }
         }
     }
 
-    fun identifier_quote(self) -> String {
+    fun identifier_quote(self) -> str {
         return match self {
-            Postgres -> "\"",
-            MySql -> "`",
-            Sqlite -> "\"",
+            case Postgres { "\"" }
+            case MySql { "`" }
+            case Sqlite { "\"" }
         }
     }
 }
@@ -42,55 +42,49 @@ impl Dialect {
 // values separately from SQL, so values never become SQL syntax.
 enum Value {
     Null,
-    Text(String),
-    Integer(Int),
-    Decimal(Float),
-    Boolean(Bool),
+    Text(str),
+    Integer(int),
+    Decimal(float),
+    Boolean(bool),
 }
 
 impl Value {
-    fun parameter(self) -> Option<String> {
+    fun parameter(self) -> Option[str] {
         return match self {
-            Null -> None,
-            Text(value) -> Some(value),
-            Integer(value) -> Some("${value}"),
-            Decimal(value) -> Some("${value}"),
-            Boolean(value) -> {
-                if value {
-                    Some("1")
-                } else {
-                    Some("0")
-                }
-            },
+            case Null { None }
+            case Text(value) { Some(value) }
+            case Integer(value) { Some("${value}") }
+            case Decimal(value) { Some("${value}") }
+            case Boolean(value) { Some("1") if value else Some("0") }
         }
     }
 }
 
 fun null() -> Value = Value.Null
-fun text(value: String) -> Value = Value.Text(value)
-fun integer(value: Int) -> Value = Value.Integer(value)
-fun decimal(value: Float) -> Value = Value.Decimal(value)
-fun boolean(value: Bool) -> Value = Value.Boolean(value)
+fun text(value: str) -> Value = Value.Text(value)
+fun integer(value: int) -> Value = Value.Integer(value)
+fun decimal(value: float) -> Value = Value.Decimal(value)
+fun boolean(value: bool) -> Value = Value.Boolean(value)
 
 // A backend-neutral result row. Values preserve SQL NULL separately from an
 // empty string. Named lookups use the column labels returned by the database.
-struct Row {
-    columns: List<String>,
-    values: List<String>,
-    nulls: List<Bool>,
+class Row {
+    columns: list[str]
+    values: list[str]
+    nulls: list[bool]
 }
 
 impl Row {
-    fun get(self, index: Int) -> String {
+    fun get(self, index: int) -> str {
         return self.values[index]
     }
 
-    fun is_null(self, index: Int) -> Bool {
+    fun is_null(self, index: int) -> bool {
         return self.nulls[index]
     }
 
-    fun index_of(self, name: String) -> Option<Int> {
-        let i = 0
+    fun index_of(self, name: str) -> Option[int] {
+        var i = 0
         while i < self.columns.len() {
             if self.columns[i] == name {
                 return Some(i)
@@ -100,97 +94,85 @@ impl Row {
         return None
     }
 
-    fun get_named(self, name: String) -> Option<String> {
+    fun get_named(self, name: str) -> Option[str] {
         return match self.index_of(name) {
-            Some(index) -> {
-                if self.nulls[index] {
-                    None
-                } else {
-                    Some(self.values[index])
-                }
-            },
-            None -> None,
+            case Some(index) { None if self.nulls[index] else Some(self.values[index]) }
+            case None { None }
         }
     }
 
-    fun is_null_named(self, name: String) -> Bool {
+    fun is_null_named(self, name: str) -> bool {
         return match self.index_of(name) {
-            Some(index) -> self.nulls[index],
-            None -> false,
+            case Some(index) { self.nulls[index] }
+            case None { false }
         }
     }
 
-    fun optional(self, name: String) -> Result<Option<String>, Error> {
+    fun optional(self, name: str) -> Result[Option[str], Error] {
         return match self.index_of(name) {
-            Some(index) -> {
-                if self.nulls[index] {
-                    Ok(None)
-                } else {
-                    Ok(Some(self.values[index]))
-                }
-            },
-            None -> Err(error_kind("nest", "column ${name} is missing")),
+            case Some(index) { Ok(None) if self.nulls[index] else Ok(Some(self.values[index])) }
+            case None { Err(error_kind("nest", "column ${name} is missing")) }
         }
     }
 
-    fun required(self, name: String) -> Result<String, Error> {
+    fun required(self, name: str) -> Result[str, Error] {
         return match self.optional(name)? {
-            Some(value) -> Ok(value),
-            None -> Err(error_kind("nest", "column ${name} is NULL")),
+            case Some(value) { Ok(value) }
+            case None { Err(error_kind("nest", "column ${name} is NULL")) }
         }
     }
 
-    fun int_named(self, name: String) -> Result<Int, Error> {
+    fun int_named(self, name: str) -> Result[int, Error] {
         let value = self.required(name)?
         return match value.parse_int() {
-            Some(parsed) -> Ok(parsed),
-            None -> Err(error_kind("nest", "column ${name} is not an integer")),
+            case Some(parsed) { Ok(parsed) }
+            case None { Err(error_kind("nest", "column ${name} is not an integer")) }
         }
     }
 
-    fun float_named(self, name: String) -> Result<Float, Error> {
+    fun float_named(self, name: str) -> Result[float, Error] {
         let value = self.required(name)?
         return match value.parse_float() {
-            Some(parsed) -> Ok(parsed),
-            None -> Err(error_kind("nest", "column ${name} is not a float")),
+            case Some(parsed) { Ok(parsed) }
+            case None { Err(error_kind("nest", "column ${name} is not a float")) }
         }
     }
 
-    fun bool_named(self, name: String) -> Result<Bool, Error> {
+    fun bool_named(self, name: str) -> Result[bool, Error] {
         let value = self.required(name)?.to_lower()
-        if value == "true" || value == "t" || value == "1" {
+        if value == "true" or value == "t" or value == "1" {
             return Ok(true)
         }
-        if value == "false" || value == "f" || value == "0" {
+        if value == "false" or value == "f" or value == "0" {
             return Ok(false)
         }
         return Err(error_kind("nest", "column ${name} is not a boolean"))
     }
 }
 
-struct QueryResult {
-    columns: List<String>,
-    rows: List<Row>,
-    affected: Int,
-    last_insert_id: Int,
+class QueryResult {
+    columns: list[str]
+    rows: list[Row]
+    affected: int
+    last_insert_id: int
 }
 
 impl QueryResult {
-    fun row_count(self) -> Int = self.rows.len()
+    fun row_count(self) -> int = self.rows.len()
 }
 
 // Models opt into decoding explicitly, so mappings stay compile-time checked
 // without runtime reflection. A future derive can generate this same trait.
 trait FromRow {
-    fun from_row(row: Row) -> Result<Self, Error>
+    fun from_row(row: Row) -> Result[Self, Error]
 }
 
-fun decode_row<T: FromRow>(row: Row) -> Result<T, Error> {
+fun decode_row[T: FromRow](row: Row) -> Result[T, Error] {
     return T.from_row(row)
 }
 
-fun map_rows<T: FromRow>(result: QueryResult) -> Result<List<T>, Error> {
-    let models: List<T> = []
+fun map_rows[T: FromRow](result: QueryResult) -> Result[list[T], Error] {
+    let models: list[T] = []
     for row in result.rows {
         models.push(T.from_row(row)?)
     }
@@ -201,184 +183,184 @@ fun map_rows<T: FromRow>(result: QueryResult) -> Result<List<T>, Error> {
 trait Executor {
     fun dialect(self) -> Dialect
 
-    fun run(self, query: CompiledQuery) -> Result<QueryResult, Error>
+    fun run(self, query: CompiledQuery) -> Result[QueryResult, Error]
 }
 
-struct CompiledQuery {
-    sql: String,
-    params: List<Option<String>>,
-    columns: List<String>,
-    returns_rows: Bool,
+class CompiledQuery {
+    sql: str
+    params: list[Option[str]]
+    columns: list[str]
+    returns_rows: bool
 }
 
 fun raw_query(
-    sql: String,
-    params: List<Option<String>>,
-    columns: List<String>,
-    returns_rows: Bool,
+    sql: str,
+    params: list[Option[str]],
+    columns: list[str],
+    returns_rows: bool,
 ) -> CompiledQuery {
-    return CompiledQuery { sql, params, columns, returns_rows }
+    return CompiledQuery(sql: sql, params: params, columns: columns, returns_rows: returns_rows)
 }
 
-struct SelectField {
-    name: String,
-    alias: Option<String>,
+class SelectField {
+    name: str
+    alias: Option[str]
 }
 
-struct Condition {
-    connector: String,
-    column: String,
-    operator: String,
-    value: Option<Value>,
-    values: List<Value>,
+class Condition {
+    connector: str
+    column: str
+    operator: str
+    value: Option[Value]
+    values: list[Value]
 }
 
-struct Ordering {
-    column: String,
-    direction: String,
+class Ordering {
+    column: str
+    direction: str
 }
 
-struct Join {
-    kind: String,
-    table: String,
-    left: String,
-    right: String,
+class Join {
+    kind: str
+    table: str
+    left: str
+    right: str
 }
 
-struct SelectQuery {
-    table: String,
-    fields: List<SelectField>,
-    joins: List<Join>,
-    conditions: List<Condition>,
-    orderings: List<Ordering>,
-    limit_value: Option<Int>,
-    offset_value: Option<Int>,
+class SelectQuery {
+    table: str
+    fields: list[SelectField]
+    joins: list[Join]
+    conditions: list[Condition]
+    orderings: list[Ordering]
+    limit_value: Option[int]
+    offset_value: Option[int]
 }
 
-fun select(table: String) -> SelectQuery {
-    let fields: List<SelectField> = []
-    let joins: List<Join> = []
-    let conditions: List<Condition> = []
-    let orderings: List<Ordering> = []
-    return SelectQuery {
-        table,
-        fields,
-        joins,
-        conditions,
-        orderings,
+fun select(table: str) -> SelectQuery {
+    let fields: list[SelectField] = []
+    let joins: list[Join] = []
+    let conditions: list[Condition] = []
+    let orderings: list[Ordering] = []
+    return SelectQuery(
+        table: table,
+        fields: fields,
+        joins: joins,
+        conditions: conditions,
+        orderings: orderings,
         limit_value: None,
         offset_value: None,
-    }
+    )
 }
 
 impl SelectQuery {
-    fun column(self, name: String) -> SelectQuery {
-        self.fields.push(SelectField { name, alias: None })
+    fun column(self, name: str) -> SelectQuery {
+        self.fields.push(SelectField(name: name, alias: None))
         return self
     }
 
-    fun column_as(self, name: String, alias: String) -> SelectQuery {
-        self.fields.push(SelectField { name, alias: Some(alias) })
+    fun column_as(self, name: str, alias: str) -> SelectQuery {
+        self.fields.push(SelectField(name: name, alias: Some(alias)))
         return self
     }
 
-    fun inner_join(self, table: String, left: String, right: String) -> SelectQuery {
-        self.joins.push(Join { kind: "INNER", table, left, right })
+    fun inner_join(self, table: str, left: str, right: str) -> SelectQuery {
+        self.joins.push(Join(kind: "INNER", table: table, left: left, right: right))
         return self
     }
 
-    fun left_join(self, table: String, left: String, right: String) -> SelectQuery {
-        self.joins.push(Join { kind: "LEFT", table, left, right })
+    fun left_join(self, table: str, left: str, right: str) -> SelectQuery {
+        self.joins.push(Join(kind: "LEFT", table: table, left: left, right: right))
         return self
     }
 
-    fun where_eq(self, column: String, value: Value) -> SelectQuery {
+    fun where_eq(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, "=", value))
         return self
     }
 
-    fun or_where_eq(self, column: String, value: Value) -> SelectQuery {
+    fun or_where_eq(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("OR", column, "=", value))
         return self
     }
 
-    fun where_not_eq(self, column: String, value: Value) -> SelectQuery {
+    fun where_not_eq(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, "<>", value))
         return self
     }
 
-    fun where_gt(self, column: String, value: Value) -> SelectQuery {
+    fun where_gt(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, ">", value))
         return self
     }
 
-    fun where_gte(self, column: String, value: Value) -> SelectQuery {
+    fun where_gte(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, ">=", value))
         return self
     }
 
-    fun where_lt(self, column: String, value: Value) -> SelectQuery {
+    fun where_lt(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, "<", value))
         return self
     }
 
-    fun where_lte(self, column: String, value: Value) -> SelectQuery {
+    fun where_lte(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, "<=", value))
         return self
     }
 
-    fun where_like(self, column: String, value: Value) -> SelectQuery {
+    fun where_like(self, column: str, value: Value) -> SelectQuery {
         self.conditions.push(value_condition("AND", column, "LIKE", value))
         return self
     }
 
-    fun where_null(self, column: String) -> SelectQuery {
+    fun where_null(self, column: str) -> SelectQuery {
         self.conditions.push(null_condition("AND", column, "IS NULL"))
         return self
     }
 
-    fun where_not_null(self, column: String) -> SelectQuery {
+    fun where_not_null(self, column: str) -> SelectQuery {
         self.conditions.push(null_condition("AND", column, "IS NOT NULL"))
         return self
     }
 
-    fun where_in(self, column: String, values: List<Value>) -> SelectQuery {
+    fun where_in(self, column: str, values: list[Value]) -> SelectQuery {
         self.conditions.push(in_condition("AND", column, "IN", values))
         return self
     }
 
-    fun where_not_in(self, column: String, values: List<Value>) -> SelectQuery {
+    fun where_not_in(self, column: str, values: list[Value]) -> SelectQuery {
         self.conditions.push(in_condition("AND", column, "NOT IN", values))
         return self
     }
 
-    fun order_asc(self, column: String) -> SelectQuery {
-        self.orderings.push(Ordering { column, direction: "ASC" })
+    fun order_asc(self, column: str) -> SelectQuery {
+        self.orderings.push(Ordering(column: column, direction: "ASC"))
         return self
     }
 
-    fun order_desc(self, column: String) -> SelectQuery {
-        self.orderings.push(Ordering { column, direction: "DESC" })
+    fun order_desc(self, column: str) -> SelectQuery {
+        self.orderings.push(Ordering(column: column, direction: "DESC"))
         return self
     }
 
-    fun limit(self, count: Int) -> SelectQuery {
+    fun limit(self, count: int) -> SelectQuery {
         self.limit_value = Some(count)
         return self
     }
 
-    fun offset(self, count: Int) -> SelectQuery {
+    fun offset(self, count: int) -> SelectQuery {
         self.offset_value = Some(count)
         return self
     }
 
-    fun compile(self, dialect: Dialect) -> Result<CompiledQuery, Error> {
-        let sql = "SELECT "
-        let columns: List<String> = []
+    fun compile(self, dialect: Dialect) -> Result[CompiledQuery, Error] {
+        var sql = "SELECT "
+        let columns: list[str] = []
         if self.fields.len() == 0 {
             sql = sql.concat("*")
         } else {
-            let i = 0
+            var i = 0
             while i < self.fields.len() {
                 if i > 0 {
                     sql = sql.concat(", ")
@@ -386,11 +368,11 @@ impl SelectQuery {
                 let field = self.fields[i]
                 sql = sql.concat(quote_identifier(field.name, dialect)?)
                 match field.alias {
-                    Some(alias) -> {
+                    case Some(alias) {
                         sql = sql.concat(" AS ").concat(quote_identifier(alias, dialect)?)
                         columns.push(alias)
-                    },
-                    None -> columns.push(last_identifier_segment(field.name)),
+                    }
+                    case None { columns.push(last_identifier_segment(field.name)) }
                 }
                 i = i + 1
             }
@@ -406,7 +388,7 @@ impl SelectQuery {
         sql = sql.concat(compiled_conditions.sql)
         if self.orderings.len() > 0 {
             sql = sql.concat(" ORDER BY ")
-            let i = 0
+            var i = 0
             while i < self.orderings.len() {
                 if i > 0 {
                     sql = sql.concat(", ")
@@ -418,83 +400,83 @@ impl SelectQuery {
             }
         }
         match self.limit_value {
-            Some(count) -> {
+            case Some(count) {
                 if count < 0 {
                     return Err(error_kind("nest", "limit cannot be negative"))
                 }
                 sql = sql.concat(" LIMIT ${count}")
-            },
-            None -> {},
+            }
+            case None {}
         }
         match self.offset_value {
-            Some(count) -> {
+            case Some(count) {
                 if count < 0 {
                     return Err(error_kind("nest", "offset cannot be negative"))
                 }
                 match self.limit_value {
-                    Some(_) -> {
+                    case Some(_) {
                         sql = sql.concat(" OFFSET ${count}")
-                    },
-                    None -> {
+                    }
+                    case None {
                         sql = match dialect {
-                            Postgres -> sql.concat(" OFFSET ${count}"),
-                            MySql -> sql.concat(" LIMIT 18446744073709551615 OFFSET ${count}"),
-                            Sqlite -> sql.concat(" LIMIT -1 OFFSET ${count}"),
+                            case Postgres { sql.concat(" OFFSET ${count}") }
+                            case MySql { sql.concat(" LIMIT 18446744073709551615 OFFSET ${count}") }
+                            case Sqlite { sql.concat(" LIMIT -1 OFFSET ${count}") }
                         }
-                    },
+                    }
                 }
-            },
-            None -> {},
+            }
+            case None {}
         }
         return Ok(
-            CompiledQuery {
-                sql,
+            CompiledQuery(
+                sql: sql,
                 params: compiled_conditions.params,
-                columns,
+                columns: columns,
                 returns_rows: true,
-            },
+            ),
         )
     }
 }
 
-struct Assignment {
-    column: String,
-    value: Value,
+class Assignment {
+    column: str
+    value: Value
 }
 
-struct InsertQuery {
-    table: String,
-    values: List<Assignment>,
-    returning: List<String>,
+class InsertQuery {
+    table: str
+    values: list[Assignment]
+    returning: list[str]
 }
 
-fun insert_into(table: String) -> InsertQuery {
-    let values: List<Assignment> = []
-    let returning: List<String> = []
-    return InsertQuery { table, values, returning }
+fun insert_into(table: str) -> InsertQuery {
+    let values: list[Assignment] = []
+    let returning: list[str] = []
+    return InsertQuery(table: table, values: values, returning: returning)
 }
 
 impl InsertQuery {
-    fun value(self, column: String, value: Value) -> InsertQuery {
-        self.values.push(Assignment { column, value })
+    fun value(self, column: str, value: Value) -> InsertQuery {
+        self.values.push(Assignment(column: column, value: value))
         return self
     }
 
     // Return `column` from the inserted row (PostgreSQL and SQLite). Chain it to
     // read a generated id without a follow-up query. MySQL has no RETURNING;
     // compile rejects it there so the mistake surfaces before the round trip.
-    fun returning(self, column: String) -> InsertQuery {
+    fun returning(self, column: str) -> InsertQuery {
         self.returning.push(column)
         return self
     }
 
-    fun compile(self, dialect: Dialect) -> Result<CompiledQuery, Error> {
+    fun compile(self, dialect: Dialect) -> Result[CompiledQuery, Error] {
         if self.values.len() == 0 {
             return Err(error_kind("nest", "insert requires at least one value"))
         }
-        let sql = "INSERT INTO ".concat(quote_identifier(self.table, dialect)?).concat(" (")
-        let params: List<Option<String>> = []
-        let i = 0
+        var sql = "INSERT INTO ".concat(quote_identifier(self.table, dialect)?).concat(" (")
+        let params: list[Option[str]] = []
+        var i = 0
         while i < self.values.len() {
             if i > 0 {
                 sql = sql.concat(", ")
@@ -503,7 +485,7 @@ impl InsertQuery {
             i = i + 1
         }
         sql = sql.concat(") VALUES (")
-        let i = 0
+        var i = 0
         while i < self.values.len() {
             if i > 0 {
                 sql = sql.concat(", ")
@@ -513,19 +495,19 @@ impl InsertQuery {
             i = i + 1
         }
         sql = sql.concat(")")
-        let columns: List<String> = []
-        let returns_rows = false
+        let columns: list[str] = []
+        var returns_rows = false
         if self.returning.len() > 0 {
             let mysql = match dialect {
-                MySql -> true,
-                Postgres -> false,
-                Sqlite -> false,
+                case MySql { true }
+                case Postgres { false }
+                case Sqlite { false }
             }
             if mysql {
                 return Err(error_kind("nest", "MySQL does not support RETURNING"))
             }
             sql = sql.concat(" RETURNING ")
-            let r = 0
+            var r = 0
             while r < self.returning.len() {
                 if r > 0 {
                     sql = sql.concat(", ")
@@ -536,45 +518,47 @@ impl InsertQuery {
             }
             returns_rows = true
         }
-        return Ok(CompiledQuery { sql, params, columns, returns_rows })
+        return Ok(
+            CompiledQuery(sql: sql, params: params, columns: columns, returns_rows: returns_rows),
+        )
     }
 }
 
-struct UpdateQuery {
-    table: String,
-    assignments: List<Assignment>,
-    conditions: List<Condition>,
+class UpdateQuery {
+    table: str
+    assignments: list[Assignment]
+    conditions: list[Condition]
 }
 
-fun update(table: String) -> UpdateQuery {
-    let assignments: List<Assignment> = []
-    let conditions: List<Condition> = []
-    return UpdateQuery { table, assignments, conditions }
+fun update(table: str) -> UpdateQuery {
+    let assignments: list[Assignment] = []
+    let conditions: list[Condition] = []
+    return UpdateQuery(table: table, assignments: assignments, conditions: conditions)
 }
 
 impl UpdateQuery {
-    fun set(self, column: String, value: Value) -> UpdateQuery {
-        self.assignments.push(Assignment { column, value })
+    fun set(self, column: str, value: Value) -> UpdateQuery {
+        self.assignments.push(Assignment(column: column, value: value))
         return self
     }
 
-    fun where_eq(self, column: String, value: Value) -> UpdateQuery {
+    fun where_eq(self, column: str, value: Value) -> UpdateQuery {
         self.conditions.push(value_condition("AND", column, "=", value))
         return self
     }
 
-    fun where_null(self, column: String) -> UpdateQuery {
+    fun where_null(self, column: str) -> UpdateQuery {
         self.conditions.push(null_condition("AND", column, "IS NULL"))
         return self
     }
 
-    fun compile(self, dialect: Dialect) -> Result<CompiledQuery, Error> {
+    fun compile(self, dialect: Dialect) -> Result[CompiledQuery, Error] {
         if self.assignments.len() == 0 {
             return Err(error_kind("nest", "update requires at least one assignment"))
         }
-        let sql = "UPDATE ".concat(quote_identifier(self.table, dialect)?).concat(" SET ")
-        let params: List<Option<String>> = []
-        let i = 0
+        var sql = "UPDATE ".concat(quote_identifier(self.table, dialect)?).concat(" SET ")
+        let params: list[Option[str]] = []
+        var i = 0
         while i < self.assignments.len() {
             if i > 0 {
                 sql = sql.concat(", ")
@@ -593,74 +577,69 @@ impl UpdateQuery {
         for param in compiled_conditions.params {
             params.push(param)
         }
-        let columns: List<String> = []
-        return Ok(CompiledQuery { sql, params, columns, returns_rows: false })
+        let columns: list[str] = []
+        return Ok(CompiledQuery(sql: sql, params: params, columns: columns, returns_rows: false))
     }
 }
 
-struct DeleteQuery {
-    table: String,
-    conditions: List<Condition>,
+class DeleteQuery {
+    table: str
+    conditions: list[Condition]
 }
 
-fun delete_from(table: String) -> DeleteQuery {
-    let conditions: List<Condition> = []
-    return DeleteQuery { table, conditions }
+fun delete_from(table: str) -> DeleteQuery {
+    let conditions: list[Condition] = []
+    return DeleteQuery(table: table, conditions: conditions)
 }
 
 impl DeleteQuery {
-    fun where_eq(self, column: String, value: Value) -> DeleteQuery {
+    fun where_eq(self, column: str, value: Value) -> DeleteQuery {
         self.conditions.push(value_condition("AND", column, "=", value))
         return self
     }
 
-    fun where_null(self, column: String) -> DeleteQuery {
+    fun where_null(self, column: str) -> DeleteQuery {
         self.conditions.push(null_condition("AND", column, "IS NULL"))
         return self
     }
 
-    fun compile(self, dialect: Dialect) -> Result<CompiledQuery, Error> {
-        let sql = "DELETE FROM ".concat(quote_identifier(self.table, dialect)?)
+    fun compile(self, dialect: Dialect) -> Result[CompiledQuery, Error] {
+        var sql = "DELETE FROM ".concat(quote_identifier(self.table, dialect)?)
         let compiled_conditions = compile_conditions(self.conditions, dialect, 1)?
         sql = sql.concat(compiled_conditions.sql)
-        let columns: List<String> = []
+        let columns: list[str] = []
         return Ok(
-            CompiledQuery {
-                sql,
+            CompiledQuery(
+                sql: sql,
                 params: compiled_conditions.params,
-                columns,
+                columns: columns,
                 returns_rows: false,
-            },
+            ),
         )
     }
 }
 
-struct ConditionSql {
-    sql: String,
-    params: List<Option<String>>,
+class ConditionSql {
+    sql: str
+    params: list[Option[str]]
 }
 
-fun no_values() -> List<Value> {
-    let values: List<Value> = []
+fun no_values() -> list[Value] {
+    let values: list[Value] = []
     return values
 }
 
-fun is_null_value(value: Value) -> Bool {
+fun is_null_value(value: Value) -> bool {
     return match value {
-        Null -> true,
-        Text(_) -> false,
-        Integer(_) -> false,
-        Decimal(_) -> false,
-        Boolean(_) -> false,
+        case Null { true }
+        case Text(_) { false }
+        case Integer(_) { false }
+        case Decimal(_) { false }
+        case Boolean(_) { false }
     }
 }
 
-fun value_condition(
-    connector: String,
-    column: String,
-    operator: String,
-    value: Value,
-) -> Condition {
+fun value_condition(connector: str, column: str, operator: str, value: Value) -> Condition {
     if is_null_value(value) {
         if operator == "=" {
             return null_condition(connector, column, "IS NULL")
@@ -669,30 +648,43 @@ fun value_condition(
             return null_condition(connector, column, "IS NOT NULL")
         }
     }
-    return Condition { connector, column, operator, value: Some(value), values: no_values() }
+    return Condition(
+        connector: connector,
+        column: column,
+        operator: operator,
+        value: Some(value),
+        values: no_values(),
+    )
 }
 
-fun null_condition(connector: String, column: String, operator: String) -> Condition {
-    return Condition { connector, column, operator, value: None, values: no_values() }
+fun null_condition(connector: str, column: str, operator: str) -> Condition {
+    return Condition(
+        connector: connector,
+        column: column,
+        operator: operator,
+        value: None,
+        values: no_values(),
+    )
 }
 
-fun in_condition(
-    connector: String,
-    column: String,
-    operator: String,
-    values: List<Value>,
-) -> Condition {
-    return Condition { connector, column, operator, value: None, values }
+fun in_condition(connector: str, column: str, operator: str, values: list[Value]) -> Condition {
+    return Condition(
+        connector: connector,
+        column: column,
+        operator: operator,
+        value: None,
+        values: values,
+    )
 }
 
 fun compile_conditions(
-    conditions: List<Condition>,
+    conditions: list[Condition],
     dialect: Dialect,
-    start_index: Int,
-) -> Result<ConditionSql, Error> {
-    let sql = ""
-    let params: List<Option<String>> = []
-    let i = 0
+    start_index: int,
+) -> Result[ConditionSql, Error] {
+    var sql = ""
+    let params: list[Option[str]] = []
+    var i = 0
     while i < conditions.len() {
         let condition = conditions[i]
         if i == 0 {
@@ -700,8 +692,8 @@ fun compile_conditions(
         } else {
             sql = sql.concat(" ${condition.connector} ")
         }
-        let list_condition = condition.operator == "IN" || condition.operator == "NOT IN"
-        if list_condition && condition.values.len() == 0 {
+        let list_condition = condition.operator == "IN" or condition.operator == "NOT IN"
+        if list_condition and condition.values.len() == 0 {
             // Empty membership predicates are constants. This also preserves
             // the useful identity that excluding an empty list keeps all rows.
             if condition.operator == "IN" {
@@ -714,7 +706,7 @@ fun compile_conditions(
             sql = sql.concat(" ").concat(condition.operator)
             if list_condition {
                 sql = sql.concat(" (")
-                let j = 0
+                var j = 0
                 while j < condition.values.len() {
                     if j > 0 {
                         sql = sql.concat(", ")
@@ -726,47 +718,47 @@ fun compile_conditions(
                 sql = sql.concat(")")
             } else {
                 match condition.value {
-                    Some(value) -> {
+                    case Some(value) {
                         match value.parameter() {
-                            Some(parameter) -> {
+                            case Some(parameter) {
                                 sql = sql.concat(" ").concat(dialect.placeholder(start_index + params.len()))
                                 params.push(Some(parameter))
-                            },
-                            None -> {
+                            }
+                            case None {
                                 return Err(error_kind("nest", "NULL can only be compared with equality predicates"))
-                            },
+                            }
                         }
-                    },
-                    None -> {},
+                    }
+                    case None {}
                 }
             }
         }
         i = i + 1
     }
-    return Ok(ConditionSql { sql, params })
+    return Ok(ConditionSql(sql: sql, params: params))
 }
 
-fun last_identifier_segment(identifier: String) -> String {
+fun last_identifier_segment(identifier: str) -> str {
     let parts = identifier.split(".")
     return parts[parts.len() - 1]
 }
 
-fun valid_identifier_segment(segment: String, allow_star: Bool) -> Bool {
-    if allow_star && segment == "*" {
+fun valid_identifier_segment(segment: str, allow_star: bool) -> bool {
+    if allow_star and segment == "*" {
         return true
     }
     if segment.length() == 0 {
         return false
     }
-    let i = 0
+    var i = 0
     while i < segment.length() {
         let byte = __str_byte_at(segment, i)
-        let alpha = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
-        let digit = byte >= 48 && byte <= 57
-        if !(alpha || digit || byte == 95) {
+        let alpha = (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+        let digit = byte >= 48 and byte <= 57
+        if not (alpha or digit or byte == 95) {
             return false
         }
-        if i == 0 && digit {
+        if i == 0 and digit {
             return false
         }
         i = i + 1
@@ -774,17 +766,17 @@ fun valid_identifier_segment(segment: String, allow_star: Bool) -> Bool {
     return true
 }
 
-fun quote_identifier(identifier: String, dialect: Dialect) -> Result<String, Error> {
+fun quote_identifier(identifier: str, dialect: Dialect) -> Result[str, Error] {
     let parts = identifier.split(".")
     if parts.len() == 0 {
         return Err(error_kind("nest", "identifier cannot be empty"))
     }
     let quote = dialect.identifier_quote()
-    let out = ""
-    let i = 0
+    var out = ""
+    var i = 0
     while i < parts.len() {
         let part = parts[i]
-        if !valid_identifier_segment(part, i == parts.len() - 1) {
+        if not valid_identifier_segment(part, i == parts.len() - 1) {
             return Err(error_kind("nest", "invalid SQL identifier: ${identifier}"))
         }
         if i > 0 {
@@ -800,59 +792,59 @@ fun quote_identifier(identifier: String, dialect: Dialect) -> Result<String, Err
     return Ok(out)
 }
 
-fun fetch_all<T: Executor>(executor: T, query: SelectQuery) -> Result<QueryResult, Error> {
+fun fetch_all[T: Executor](executor: T, query: SelectQuery) -> Result[QueryResult, Error] {
     return executor.run(query.compile(executor.dialect())?)
 }
 
-fun insert_one<T: Executor>(executor: T, query: InsertQuery) -> Result<QueryResult, Error> {
+fun insert_one[T: Executor](executor: T, query: InsertQuery) -> Result[QueryResult, Error] {
     return executor.run(query.compile(executor.dialect())?)
 }
 
-fun update_all<T: Executor>(executor: T, query: UpdateQuery) -> Result<QueryResult, Error> {
+fun update_all[T: Executor](executor: T, query: UpdateQuery) -> Result[QueryResult, Error] {
     return executor.run(query.compile(executor.dialect())?)
 }
 
-fun delete_all<T: Executor>(executor: T, query: DeleteQuery) -> Result<QueryResult, Error> {
+fun delete_all[T: Executor](executor: T, query: DeleteQuery) -> Result[QueryResult, Error] {
     return executor.run(query.compile(executor.dialect())?)
 }
 
-fun empty_param_list() -> List<Option<String>> {
-    let params: List<Option<String>> = []
+fun empty_param_list() -> list[Option[str]] {
+    let params: list[Option[str]] = []
     return params
 }
 
-fun empty_column_list() -> List<String> {
-    let columns: List<String> = []
+fun empty_column_list() -> list[str] {
+    let columns: list[str] = []
     return columns
 }
 
 // Transaction control. BEGIN, COMMIT, and ROLLBACK are accepted by all three
 // bundled dialects (MySQL treats BEGIN as START TRANSACTION).
-fun begin<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+fun begin[T: Executor](executor: T) -> Result[QueryResult, Error] {
     return executor.run(raw_query("BEGIN", empty_param_list(), empty_column_list(), false))
 }
 
-fun commit<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+fun commit[T: Executor](executor: T) -> Result[QueryResult, Error] {
     return executor.run(raw_query("COMMIT", empty_param_list(), empty_column_list(), false))
 }
 
-fun rollback<T: Executor>(executor: T) -> Result<QueryResult, Error> {
+fun rollback[T: Executor](executor: T) -> Result[QueryResult, Error] {
     return executor.run(raw_query("ROLLBACK", empty_param_list(), empty_column_list(), false))
 }
 
 // Run `body` inside a transaction: BEGIN, then COMMIT on Ok, or ROLLBACK on Err
 // (the original error is preserved). The rollback is best effort, so a failed
 // body still surfaces its own error rather than a rollback error.
-fun transaction<T: Executor, R>(executor: T, body: fun(T) -> Result<R, Error>) -> Result<R, Error> {
+fun transaction[T: Executor, R](executor: T, body: fun(T) -> Result[R, Error]) -> Result[R, Error] {
     begin(executor)?
     return match body(executor) {
-        Ok(value) -> {
+        case Ok(value) {
             commit(executor)?
             Ok(value)
-        },
-        Err(error) -> {
+        }
+        case Err(error) {
             let _ = rollback(executor)
             Err(error)
-        },
+        }
     }
 }
