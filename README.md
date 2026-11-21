@@ -8,10 +8,8 @@ one query, result, model, and migration API over PostgreSQL, MySQL, and SQLite.
 Its public `Executor` trait keeps the adapter boundary open to future Raven
 database libraries.
 
-Nest is under active initial development. It requires Raven 2.26.1 or later (the
-transaction helper passes a closure whose parameter is typed with the adapter,
-which earlier compilers could not resolve). The current foundation is tested end
-to end with Raven 2.26.1, PostgreSQL 16 and 17, MySQL 8.0.43, and bundled SQLite.
+Nest is under active initial development. It requires Raven 3.0.0 or later. The current foundation is tested end to end
+with PostgreSQL 16 and 17, MySQL 8.0.43, and bundled SQLite.
 
 ## What works
 
@@ -38,7 +36,7 @@ Add Nest to `rv.toml`:
 
 ```toml
 [dependencies]
-"github.com/martian56/nest-orm" = "v0.2.0"
+"github.com/martian56/nest-orm" = "v0.3.0"
 ```
 
 Nest currently depends on version `v0.2.0` of all three Raven database drivers.
@@ -46,20 +44,20 @@ Nest currently depends on version `v0.2.0` of all three Raven database drivers.
 ## Quick start with SQLite
 
 ```rust
-import "github.com/martian56/raven-sqlite" { Db }
-import "github.com/martian56/nest-orm" {
+from "github.com/martian56/raven-sqlite" import Db
+from "github.com/martian56/nest-orm" import 
     fetch_all,
     insert_into,
     insert_one,
     integer,
     select,
     text,
-}
-import "github.com/martian56/nest-orm/sqlite" { sqlite }
+
+from "github.com/martian56/nest-orm/sqlite" import sqlite
 
 fun main() {
     match Db.open(":memory:") {
-        Ok(connection) -> {
+        case Ok(connection) {
             let _ = connection.exec(
                 "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)",
             )
@@ -70,12 +68,12 @@ fun main() {
                 db,
                 select("users").column("id").column("name").where_eq("id", integer(1)),
             ) {
-                Ok(result) -> print(result.rows[0].get_named("name")),
-                Err(e) -> print(e.message()),
+                case Ok(result) { print(result.rows[0].get_named("name")) }
+                case Err(e) { print(e.message()) }
             }
             db.close()
-        },
-        Err(message) -> print(message),
+        }
+        case Err(message) { print(message) }
     }
 }
 ```
@@ -83,8 +81,8 @@ fun main() {
 Use the corresponding adapter for a server connection:
 
 ```rust
-import "github.com/martian56/nest-orm/postgres" { postgres }
-import "github.com/martian56/nest-orm/mysql" { mysql }
+from "github.com/martian56/nest-orm/postgres" import postgres
+from "github.com/martian56/nest-orm/mysql" import mysql
 
 let pg = postgres(postgres_connection)
 let my = mysql(mysql_connection)
@@ -104,15 +102,13 @@ Passing `null()` to `where_eq` or `where_not_eq` produces `IS NULL` or
 `IS NOT NULL`; ordered comparisons with NULL are rejected as mistakes.
 
 ```rust
-let query = select("users")
-    .column("users.id")
-    .column_as("users.name", "display_name")
-    .left_join("profiles", "users.id", "profiles.user_id")
-    .where_eq("users.active", boolean(true))
-    .where_gt("users.age", integer(17))
-    .order_desc("users.id")
-    .limit(20)
-    .offset(40)
+let query = select("users").column("users.id").column_as("users.name", "display_name").left_join(
+    "profiles",
+    "users.id",
+    "profiles.user_id",
+).where_eq("users.active", boolean(true)).where_gt("users.age", integer(17)).order_desc("users.id").limit(
+    20,
+).offset(40)
 
 let users = fetch_all(db, query)?
 ```
@@ -122,9 +118,7 @@ Writes use the same typed values:
 ```rust
 let inserted = insert_one(
     db,
-    insert_into("users")
-        .value("name", text("Grace"))
-        .value("nickname", null()),
+    insert_into("users").value("name", text("Grace")).value("nickname", null()),
 )?
 
 let changed = update_all(
@@ -140,10 +134,7 @@ field reports changed rows. `last_insert_id` is populated by MySQL and SQLite.
 PostgreSQL and SQLite can return generated values in the same round trip:
 
 ```rust
-let inserted = insert_one(
-    db,
-    insert_into("users").value("name", text("Ada")).returning("id"),
-)?
+let inserted = insert_one(db, insert_into("users").value("name", text("Ada")).returning("id"))?
 let id = inserted.rows[0].int_named("id")?
 ```
 
@@ -156,8 +147,12 @@ query compilation, and MySQL-generated ids remain available as
 Use `transaction` to commit a successful closure or roll back its error:
 
 ```rust
-let result = transaction(db, fun(tx: Sqlite) -> Result<QueryResult, Error> =
-    insert_one(tx, insert_into("users").value("name", text("Grace")))
+let result = transaction(
+    db,
+    (tx: Sqlite) -> Result[QueryResult, Error] => insert_one(
+        tx,
+        insert_into("users").value("name", text("Grace")),
+    ),
 )?
 ```
 
@@ -179,21 +174,21 @@ Raven models implement `FromRow`. This makes field conversion explicit and
 compile-time checked today, while leaving room for a derive macro later.
 
 ```rust
-struct User {
-    id: Int,
-    name: String,
+class User {
+    id: int
+    name: str
 }
 
 impl FromRow for User {
-    fun from_row(row: Row) -> Result<User, Error> {
+    fun from_row(row: Row) -> Result[User, Error] {
         let id = row.int_named("id")?
         let name = row.required("name")?
-        return Ok(User { id, name })
+        return Ok(User(id: id, name: name))
     }
 }
 
 let result = fetch_all(db, select("users").column("id").column("name"))?
-let users: List<User> = map_rows(result)?
+let users: list[User] = map_rows(result)?
 ```
 
 `required`, `optional`, `int_named`, `float_named`, and `bool_named` report
@@ -206,15 +201,15 @@ Migration definitions are ordinary Raven values, so a compiled migration
 program contains its complete schema history:
 
 ```rust
-import "github.com/martian56/nest-orm/migrations" { migrate, migration }
+from "github.com/martian56/nest-orm/migrations" import migrate, migration
 
 let migrations = [
-    migration(1, "create users")
-        .up("CREATE TABLE users (id BIGINT PRIMARY KEY, name VARCHAR(255) NOT NULL)")
-        .down("DROP TABLE users"),
-    migration(2, "index user names")
-        .up("CREATE INDEX users_name_idx ON users (name)")
-        .down("DROP INDEX users_name_idx"),
+    migration(1, "create users").up(
+        "CREATE TABLE users (id BIGINT PRIMARY KEY, name VARCHAR(255) NOT NULL)",
+    ).down("DROP TABLE users"),
+    migration(2, "index user names").up("CREATE INDEX users_name_idx ON users (name)").down(
+        "DROP INDEX users_name_idx",
+    ),
 ]
 
 let report = migrate(db, migrations)?
@@ -241,7 +236,8 @@ An adapter wraps its driver connection and implements two methods:
 ```rust
 trait Executor {
     fun dialect(self) -> Dialect
-    fun run(self, query: CompiledQuery) -> Result<QueryResult, Error>
+
+    fun run(self, query: CompiledQuery) -> Result[QueryResult, Error]
 }
 ```
 

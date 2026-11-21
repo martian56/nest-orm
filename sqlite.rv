@@ -1,23 +1,23 @@
 // SQLite adapter for Nest.
 
-import std/error { error_kind }
-import std/string
-import "github.com/martian56/raven-sqlite" { Db as SqliteDb, Stmt as SqliteStmt }
-import "./lib" { CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow }
+from std.error import error_kind
+import std.string
+from "github.com/martian56/raven-sqlite" import Db as SqliteDb, Stmt as SqliteStmt
+from "./lib" import CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow
 
-struct Sqlite {
-    connection: SqliteDb,
+class Sqlite {
+    connection: SqliteDb
 }
 
 fun sqlite(connection: SqliteDb) -> Sqlite {
-    return Sqlite { connection }
+    return Sqlite(connection: connection)
 }
 
 impl Sqlite {
-    fun try_close(self) -> Result<Bool, Error> {
+    fun try_close(self) -> Result[bool, Error] {
         return match self.connection.try_close() {
-            Ok(closed) -> Ok(closed),
-            Err(message) -> Err(error_kind("sqlite", message)),
+            case Ok(closed) { Ok(closed) }
+            case Err(message) { Err(error_kind("sqlite", message)) }
         }
     }
 
@@ -29,57 +29,57 @@ impl Sqlite {
 impl Executor for Sqlite {
     fun dialect(self) -> Dialect = Dialect.Sqlite
 
-    fun run(self, query: CompiledQuery) -> Result<NestQueryResult, Error> {
+    fun run(self, query: CompiledQuery) -> Result[NestQueryResult, Error] {
         let statement = prepare_sqlite(self.connection, query.sql)?
         match bind_sqlite(statement, query.params) {
-            Ok(_) -> {},
-            Err(e) -> {
+            case Ok(_) {}
+            case Err(e) {
                 finalize_sqlite_quietly(statement)
                 return Err(e)
-            },
+            }
         }
         if query.returns_rows {
             return read_sqlite_rows(self.connection, statement, query.columns)
         }
         match statement.next() {
-            Ok(has_row) -> {
+            case Ok(has_row) {
                 if has_row {
                     finalize_sqlite_quietly(statement)
                     return Err(error_kind("sqlite", "query returned rows but was not marked as row-returning"))
                 }
-            },
-            Err(message) -> {
+            }
+            case Err(message) {
                 finalize_sqlite_quietly(statement)
                 return Err(error_kind("sqlite", message))
-            },
+            }
         }
         match statement.try_finalize() {
-            Ok(_) -> {},
-            Err(message) -> {
+            case Ok(_) {}
+            case Err(message) {
                 return Err(error_kind("sqlite", message))
-            },
+            }
         }
-        let columns: List<String> = []
-        let rows: List<NestRow> = []
+        let columns: list[str] = []
+        let rows: list[NestRow] = []
         return Ok(
-            NestQueryResult {
-                columns,
-                rows,
+            NestQueryResult(
+                columns: columns,
+                rows: rows,
                 affected: self.connection.changes(),
                 last_insert_id: self.connection.last_insert_id(),
-            },
+            ),
         )
     }
 }
 
-fun prepare_sqlite(connection: SqliteDb, sql: String) -> Result<SqliteStmt, Error> {
+fun prepare_sqlite(connection: SqliteDb, sql: str) -> Result[SqliteStmt, Error] {
     return match connection.prepare(sql) {
-        Ok(value) -> Ok(value),
-        Err(message) -> Err(error_kind("sqlite", message)),
+        case Ok(value) { Ok(value) }
+        case Err(message) { Err(error_kind("sqlite", message)) }
     }
 }
 
-fun bind_sqlite(statement: SqliteStmt, params: List<Option<String>>) -> Result<Bool, Error> {
+fun bind_sqlite(statement: SqliteStmt, params: list[Option[str]]) -> Result[bool, Error] {
     if params.len() != statement.parameter_count() {
         return Err(
             error_kind(
@@ -88,25 +88,25 @@ fun bind_sqlite(statement: SqliteStmt, params: List<Option<String>>) -> Result<B
             ),
         )
     }
-    let i = 0
+    var i = 0
     while i < params.len() {
         match params[i] {
-            Some(value) -> {
+            case Some(value) {
                 match statement.try_bind_text(i + 1, value) {
-                    Ok(_) -> {},
-                    Err(message) -> {
+                    case Ok(_) {}
+                    case Err(message) {
                         return Err(error_kind("sqlite", message))
-                    },
+                    }
                 }
-            },
-            None -> {
+            }
+            case None {
                 match statement.try_bind_null(i + 1) {
-                    Ok(_) -> {},
-                    Err(message) -> {
+                    case Ok(_) {}
+                    case Err(message) {
                         return Err(error_kind("sqlite", message))
-                    },
+                    }
                 }
-            },
+            }
         }
         i = i + 1
     }
@@ -117,12 +117,12 @@ fun finalize_sqlite_quietly(statement: SqliteStmt) {
     let _ = statement.try_finalize()
 }
 
-fun sqlite_columns(statement: SqliteStmt, expected: List<String>) -> List<String> {
-    if expected.len() > 0 && expected.len() == statement.column_count() {
+fun sqlite_columns(statement: SqliteStmt, expected: list[str]) -> list[str] {
+    if expected.len() > 0 and expected.len() == statement.column_count() {
         return expected
     }
-    let columns: List<String> = []
-    let i = 0
+    let columns: list[str] = []
+    var i = 0
     while i < statement.column_count() {
         columns.push(statement.column_name(i))
         i = i + 1
@@ -133,67 +133,67 @@ fun sqlite_columns(statement: SqliteStmt, expected: List<String>) -> List<String
 fun read_sqlite_rows(
     connection: SqliteDb,
     statement: SqliteStmt,
-    expected_columns: List<String>,
-) -> Result<NestQueryResult, Error> {
+    expected_columns: list[str],
+) -> Result[NestQueryResult, Error] {
     let columns = sqlite_columns(statement, expected_columns)
-    let rows: List<NestRow> = []
-    let reading = true
+    let rows: list[NestRow] = []
+    var reading = true
     while reading {
         match statement.next() {
-            Ok(has_row) -> {
+            case Ok(has_row) {
                 reading = has_row
-            },
-            Err(message) -> {
+            }
+            case Err(message) {
                 finalize_sqlite_quietly(statement)
                 return Err(error_kind("sqlite", message))
-            },
+            }
         }
-        if !reading {
+        if not reading {
             break
         }
-        let values: List<String> = []
-        let nulls: List<Bool> = []
-        let i = 0
+        let values: list[str] = []
+        let nulls: list[bool] = []
+        var i = 0
         while i < statement.column_count() {
             let is_null = match statement.try_is_null(i) {
-                Ok(value) -> value,
-                Err(message) -> {
+                case Ok(value) { value }
+                case Err(message) {
                     finalize_sqlite_quietly(statement)
                     return Err(error_kind("sqlite", message))
                     false
-                },
+                }
             }
             if is_null {
                 values.push("")
                 nulls.push(true)
             } else {
                 let value = match statement.try_text(i) {
-                    Ok(text) -> text,
-                    Err(message) -> {
+                    case Ok(text) { text }
+                    case Err(message) {
                         finalize_sqlite_quietly(statement)
                         return Err(error_kind("sqlite", message))
                         ""
-                    },
+                    }
                 }
                 values.push(value)
                 nulls.push(false)
             }
             i = i + 1
         }
-        rows.push(NestRow { columns, values, nulls })
+        rows.push(NestRow(columns: columns, values: values, nulls: nulls))
     }
     match statement.try_finalize() {
-        Ok(_) -> {},
-        Err(message) -> {
+        case Ok(_) {}
+        case Err(message) {
             return Err(error_kind("sqlite", message))
-        },
+        }
     }
     return Ok(
-        NestQueryResult {
-            columns,
-            rows,
+        NestQueryResult(
+            columns: columns,
+            rows: rows,
             affected: connection.changes(),
             last_insert_id: connection.last_insert_id(),
-        },
+        ),
     )
 }
