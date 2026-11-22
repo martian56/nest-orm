@@ -45,14 +45,14 @@ Nest currently depends on version `v0.2.0` of all three Raven database drivers.
 
 ```rust
 from "github.com/martian56/raven-sqlite" import Db
-from "github.com/martian56/nest-orm" import 
+from "github.com/martian56/nest-orm" import (
     fetch_all,
     insert_into,
     insert_one,
     integer,
     select,
     text,
-
+)
 from "github.com/martian56/nest-orm/sqlite" import sqlite
 
 fun main() {
