@@ -1,6 +1,9 @@
 // MySQL adapter for Nest.
 
-from "github.com/martian56/raven-mysql" import Connection as MySqlConnection, QueryResult as MySqlQueryResult
+from "github.com/martian56/raven-mysql" import (
+    Connection as MySqlConnection,
+    QueryResult as MySqlQueryResult,
+)
 from "./lib" import CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow
 
 class MySql {

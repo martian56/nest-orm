@@ -1,6 +1,9 @@
 // PostgreSQL adapter for Nest.
 
-from "github.com/martian56/raven-postgres" import Connection as PostgresConnection, QueryResult as PostgresQueryResult
+from "github.com/martian56/raven-postgres" import (
+    Connection as PostgresConnection,
+    QueryResult as PostgresQueryResult,
+)
 from "./lib" import CompiledQuery, Dialect, Executor, QueryResult as NestQueryResult, Row as NestRow
 
 class Postgres {

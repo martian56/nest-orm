@@ -2,7 +2,20 @@
 
 from std.error import error_kind
 import std.string
-from "./lib" import CompiledQuery, Dialect, Executor, QueryResult, Row, delete_all, delete_from, insert_into, insert_one, integer, raw_query, text
+from "./lib" import (
+    CompiledQuery,
+    Dialect,
+    Executor,
+    QueryResult,
+    Row,
+    delete_all,
+    delete_from,
+    insert_into,
+    insert_one,
+    integer,
+    raw_query,
+    text,
+)
 
 class Migration {
     version: int
