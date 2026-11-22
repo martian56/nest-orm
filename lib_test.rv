@@ -1,5 +1,24 @@
 from std.test import assert_eq_int, assert_eq_str, assert_msg, assert_true
-from "./lib" import CompiledQuery, Dialect, Executor, FromRow, QueryResult, Row, Value, boolean, delete_from, fetch_all, insert_into, integer, map_rows, null, quote_identifier, select, text, update
+from "./lib" import (
+    CompiledQuery,
+    Dialect,
+    Executor,
+    FromRow,
+    QueryResult,
+    Row,
+    Value,
+    boolean,
+    delete_from,
+    fetch_all,
+    insert_into,
+    integer,
+    map_rows,
+    null,
+    quote_identifier,
+    select,
+    text,
+    update,
+)
 
 fun must[T](result: Result[T, Error]) -> T {
     return match result {
