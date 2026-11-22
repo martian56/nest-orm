@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 - 2026-11-22
+
+- Uses raven-mysql and raven-postgres 0.3.1, which report a plain error when the port is not a database server.
+- The quick-start import is written in the parenthesized form; requires Raven 3.3.0 or newer for that example.
+
 ## 0.3.0 - 2026-11-21
 
 - Ported to Raven 3 syntax; requires Raven 3.0.1 or newer.

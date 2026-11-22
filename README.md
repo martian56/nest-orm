@@ -36,7 +36,7 @@ Add Nest to `rv.toml`:
 
 ```toml
 [dependencies]
-"github.com/martian56/nest-orm" = "v0.3.0"
+"github.com/martian56/nest-orm" = "v0.3.1"
 ```
 
 Nest currently depends on version `v0.2.0` of all three Raven database drivers.
