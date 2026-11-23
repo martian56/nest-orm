@@ -13,6 +13,7 @@
 from std.error import error_kind
 from std.sync import Channel, Mutex, channel_buffered
 from "./lib" import CompiledQuery, Dialect, Executor, QueryResult, transaction as run_transaction
+from "./migrations" import Migration, MigrationReport, migrate as run_migrate
 
 class PoolStats {
     max_size: int
@@ -130,6 +131,11 @@ impl[T: Executor] Pool[T] {
         return self.with(conn => run_transaction(conn, body))
     }
 
+    // Apply `migrations` on one pooled connection.
+    fun migrate(self, migrations: list[Migration]) -> Result[MigrationReport, Error] {
+        return self.with(conn => run_migrate(conn, migrations))
+    }
+
     fun stats(self) -> PoolStats {
         self.lock.lock()
         let s = PoolStats(
@@ -166,5 +172,9 @@ impl[T: Executor] Executor for Pool[T] {
 
     fun close(self) {
         self.shutdown()
+    }
+
+    fun spreads_connections(self) -> bool {
+        return true
     }
 }

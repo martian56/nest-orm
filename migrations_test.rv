@@ -1,7 +1,14 @@
 from std.test import assert_eq_int, assert_msg, assert_true
 from "github.com/martian56/raven-sqlite" import Db as SqliteDb
 from "./lib" import Executor, raw_query
-from "./migrations" import Migration, migrate, migration, rollback_last, validate_migrations
+from "./migrations" import (
+    Migration,
+    migrate,
+    migration,
+    rollback_last,
+    split_statements,
+    validate_migrations,
+)
 from "./sqlite" import Sqlite, sqlite
 
 fun open_memory_db() -> Sqlite {
@@ -143,4 +150,15 @@ fun test_migrate_rejects_changed_or_missing_applied_history() {
         case Err(e) { assert_msg(e.message().contains("missing"), e.message()) }
     }
     db.close()
+}
+
+fun test_split_statements_respects_quotes_comments_and_dollar_bodies() {
+    let sql = "CREATE TABLE a (x TEXT DEFAULT 'a;b'); -- c;d\nCREATE TABLE \"we;ird\" (y INT);; /* e;f */ CREATE FUNCTION g() RETURNS INT AS $body$ SELECT 1; $body$ LANGUAGE sql;\n"
+    let parts = split_statements(sql)
+    assert_eq_int(parts.len(), 3)
+    assert_true(parts[0].contains("'a;b'"))
+    assert_true(parts[1].starts_with("-- c;d") and parts[1].contains("we;ird"))
+    assert_true(parts[2].contains("SELECT 1;"))
+    assert_eq_int(split_statements("  ;  ; ").len(), 0)
+    assert_eq_int(migration(1, "x").up("A; B;").up("C").up_statements.len(), 3)
 }
