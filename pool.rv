@@ -1,0 +1,170 @@
+// A bounded connection pool over any Executor.
+//
+//   let db = pool(10, () => connect_db())?
+//   let users = fetch_all(db, select("users"))?        // one pooled connection per call
+//   db.transaction(tx => place_order(tx, cart))?        // one connection for the whole body
+//
+// A Pool is itself an Executor, so the query helpers accept it directly. It
+// is safe to share between goroutines: each call checks a connection out,
+// and at most `max_size` are open at once. A connection that fails in a way
+// its adapter reports as fatal (see Executor.reusable_after) is closed
+// instead of returned, and a new one is opened on demand.
+
+from std.error import error_kind
+from std.sync import Channel, Mutex, channel_buffered
+from "./lib" import CompiledQuery, Dialect, Executor, QueryResult, transaction as run_transaction
+
+class PoolStats {
+    max_size: int
+    open: int
+    idle: int
+    in_use: int
+}
+
+class Pool[T: Executor] {
+    connect: fun() -> Result[T, Error]
+    max_size: int
+    kind: Dialect
+    idle: list[T]
+    open: int
+    closed: bool
+    lock: Mutex
+    permits: Channel[int]
+}
+
+// Open a pool of up to `max_size` connections made by `connect`. One
+// connection is opened now, so a bad address or password fails here rather
+// than on the first request.
+fun pool[T: Executor](max_size: int, connect: fun() -> Result[T, Error]) -> Result[Pool[T], Error] {
+    if max_size < 1 {
+        return Err(error_kind("nest", "pool size must be at least 1, got ${max_size}"))
+    }
+    let first = connect()?
+    let permits = channel_buffered[int](max_size)
+    for _ in range(max_size) {
+        permits.send(1)
+    }
+    return Ok(
+        Pool(
+            connect: connect,
+            max_size: max_size,
+            kind: first.dialect(),
+            idle: [first],
+            open: 1,
+            closed: false,
+            lock: Mutex.new(),
+            permits: permits,
+        ),
+    )
+}
+
+impl[T: Executor] Pool[T] {
+    // Check a connection out, waiting while all `max_size` are in use. Pair
+    // every acquire with `release` or `discard`; `with` does this for you.
+    fun acquire(self) -> Result[T, Error] {
+        let _ = self.permits.recv()
+        self.lock.lock()
+        if self.closed {
+            self.lock.unlock()
+            self.permits.send(1)
+            return Err(error_kind("nest", "pool is closed"))
+        }
+        if len(self.idle) > 0 {
+            let conn = self.idle.remove_at(len(self.idle) - 1)
+            self.lock.unlock()
+            return Ok(conn)
+        }
+        self.open = self.open + 1
+        self.lock.unlock()
+        let connect = self.connect
+        return match connect() {
+            case Ok(conn) { Ok(conn) }
+            case Err(e) {
+                self.lock.lock()
+                self.open = self.open - 1
+                self.lock.unlock()
+                self.permits.send(1)
+                Err(e)
+            }
+        }
+    }
+
+    // Return a healthy connection to the pool.
+    fun release(self, conn: T) {
+        self.lock.lock()
+        if self.closed {
+            self.open = self.open - 1
+            self.lock.unlock()
+            conn.close()
+        } else {
+            self.idle.push(conn)
+            self.lock.unlock()
+        }
+        self.permits.send(1)
+    }
+
+    // Close a connection that should not be reused and free its slot.
+    fun discard(self, conn: T) {
+        conn.close()
+        self.lock.lock()
+        self.open = self.open - 1
+        self.lock.unlock()
+        self.permits.send(1)
+    }
+
+    // Run `body` on one pooled connection, then return the connection, or
+    // close it if `body` failed with an error that leaves it unusable.
+    fun with[R](self, body: fun(T) -> Result[R, Error]) -> Result[R, Error] {
+        let conn = self.acquire()?
+        let result = body(conn)
+        match result {
+            case Ok(_) { self.release(conn) }
+            case Err(e) { self.release(conn) if conn.reusable_after(e) else self.discard(conn) }
+        }
+        return result
+    }
+
+    // Run `body` inside a transaction on one pooled connection: COMMIT on Ok,
+    // ROLLBACK on Err.
+    fun transaction[R](self, body: fun(T) -> Result[R, Error]) -> Result[R, Error] {
+        return self.with(conn => run_transaction(conn, body))
+    }
+
+    fun stats(self) -> PoolStats {
+        self.lock.lock()
+        let s = PoolStats(
+            max_size: self.max_size,
+            open: self.open,
+            idle: len(self.idle),
+            in_use: self.open - len(self.idle),
+        )
+        self.lock.unlock()
+        return s
+    }
+
+    // Close the idle connections and refuse new checkouts. Connections in
+    // use are closed as they are released.
+    fun shutdown(self) {
+        self.lock.lock()
+        self.closed = true
+        let idle = self.idle
+        self.idle = []
+        self.open = self.open - len(idle)
+        self.lock.unlock()
+        for conn in idle {
+            conn.close()
+        }
+    }
+}
+
+impl[T: Executor] Executor for Pool[T] {
+    fun dialect(self) -> Dialect = self.kind
+
+    fun run(self, query: CompiledQuery) -> Result[QueryResult, Error] {
+        return self.with(conn => conn.run(query))
+    }
+
+    fun close(self) {
+        self.shutdown()
+    }
+}

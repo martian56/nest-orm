@@ -22,6 +22,8 @@ with PostgreSQL 16 and 17, MySQL 8.0.43, and bundled SQLite.
 - INSERT ... RETURNING on PostgreSQL and SQLite to read generated columns.
 - Transactions: begin, commit, rollback, and a transaction() helper that commits
   on success and rolls back on error.
+- A connection pool, shared between goroutines, that replaces broken
+  connections.
 - Typed text, integer, decimal, boolean, and SQL NULL values.
 - A common result type with indexed and named row access.
 - Compile-time model mapping through `FromRow`.
@@ -160,6 +162,45 @@ let result = transaction(
 helper preserves the closure's original error if its best-effort rollback also
 fails.
 
+## Connection pools
+
+A server handles many requests at once, and one database connection runs one
+query at a time. `pool` keeps up to `max_size` connections and hands one to
+each caller:
+
+```rust
+from "github.com/martian56/nest-orm" import fetch_all, select
+from "github.com/martian56/nest-orm/pool" import pool
+from "github.com/martian56/nest-orm/postgres" import Postgres, postgres
+from "github.com/martian56/raven-postgres" import connect
+
+let db = pool(
+    10,
+    () => match connect("127.0.0.1", 5432, "app", "secret", "shop") {
+        case Ok(c) { Ok(postgres(c)) }
+        case Err(e) { Err(e) }
+    },
+)?
+
+let users = fetch_all(db, select("users"))?
+db.transaction((tx: Postgres) -> Result[QueryResult, Error] => place_order(tx, cart))?
+```
+
+A `Pool` is an `Executor`, so every query helper takes it directly and runs
+the query on one pooled connection. Use `db.transaction(body)` or
+`db.with(body)` when several statements must share a connection. Share one
+pool between goroutines: callers wait while all connections are in use.
+
+`pool` opens one connection immediately, so a wrong address or password fails
+at startup. A connection that fails in a way that ends its session (a network
+error, or a Postgres `FATAL`) is closed instead of reused, and a replacement
+opens on demand; an ordinary SQL error keeps the connection. `db.stats()`
+reports open, idle, and in-use counts, and `db.shutdown()` closes the pool.
+
+An adapter decides which errors end a connection through
+`Executor.reusable_after(error)`, and releases its handle in
+`Executor.close()`. Both have defaults.
+
 ## MySQL SQL modes
 
 The default `mysql(connection)` adapter matches MySQL's standard string-literal
@@ -238,6 +279,10 @@ trait Executor {
     fun dialect(self) -> Dialect
 
     fun run(self, query: CompiledQuery) -> Result[QueryResult, Error]
+
+    fun close(self) {}                                    // optional
+
+    fun reusable_after(self, error: Error) -> bool { ... } // optional
 }
 ```
 
@@ -274,7 +319,7 @@ shell script to keep the database containers running after tests.
 
 - Values use the text parameter formats exposed by the three current drivers.
 - Results are collected in memory; streaming cursors are not implemented.
-- Upserts, aggregates, subqueries, connection pools, relations, eager loading,
+- Upserts, aggregates, subqueries, relations, eager loading,
   and derive-generated model mappings are not implemented yet.
 - Migration SQL is intentionally explicit because column types and many DDL
   operations differ across databases.

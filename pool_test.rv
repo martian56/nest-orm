@@ -1,0 +1,275 @@
+from std.env import get_env_or, has_env
+from std.error import error_kind
+from "github.com/martian56/raven-postgres" import connect as connect_postgres
+from std.sync import Mutex, WaitGroup, sleep_millis
+from std.test import assert_eq_int, assert_eq_str, assert_true
+from "github.com/martian56/raven-sqlite" import Db as SqliteDb
+from "./lib" import (
+    CompiledQuery,
+    Dialect,
+    Executor,
+    QueryResult,
+    fetch_all,
+    insert_into,
+    insert_one,
+    integer,
+    raw_query,
+    select,
+    text,
+)
+from "./pool" import Pool, pool
+from "./postgres" import Postgres, postgres
+from "./sqlite" import Sqlite, sqlite
+
+class Tracker {
+    lock: Mutex
+    connects: int
+    active: int
+    peak: int
+    closed: int
+}
+
+class Fake {
+    id: int
+    tracker: Tracker
+}
+
+impl Executor for Fake {
+    fun dialect(self) -> Dialect = Dialect.Sqlite
+
+    fun run(self, query: CompiledQuery) -> Result[QueryResult, Error] {
+        let t = self.tracker
+        t.lock.lock()
+        t.active = t.active + 1
+        if t.active > t.peak {
+            t.peak = t.active
+        }
+        t.lock.unlock()
+        sleep_millis(2)
+        t.lock.lock()
+        t.active = t.active - 1
+        t.lock.unlock()
+        if query.sql == "net" {
+            return Err(error_kind("net", "connection reset"))
+        }
+        if query.sql == "sql" {
+            return Err(error_kind("sqlite", "no such table"))
+        }
+        return Ok(QueryResult(columns: [], rows: [], affected: self.id, last_insert_id: 0))
+    }
+
+    fun close(self) {
+        self.tracker.lock.lock()
+        self.tracker.closed = self.tracker.closed + 1
+        self.tracker.lock.unlock()
+    }
+}
+
+fun tracker() -> Tracker = Tracker(lock: Mutex.new(), connects: 0, active: 0, peak: 0, closed: 0)
+
+fun fake_pool(t: Tracker, size: int) -> Pool[Fake] {
+    let p = pool(
+        size,
+        () => {
+            t.lock.lock()
+            t.connects = t.connects + 1
+            let id = t.connects
+            t.lock.unlock()
+            return Ok(Fake(id: id, tracker: t))
+        },
+    )
+    return match p {
+        case Ok(v) { v }
+        case Err(e) { panic(e.message) }
+    }
+}
+
+fun q(sql: str) -> CompiledQuery = raw_query(sql, [], [], false)
+
+fun test_pool_size_must_be_positive() {
+    let t = tracker()
+    let p = pool(0, () => Ok(Fake(id: 1, tracker: t)))
+    assert_true(p.is_err())
+}
+
+fun test_pool_opens_one_connection_up_front_and_reuses_it() {
+    let t = tracker()
+    let p = fake_pool(t, 4)
+    assert_eq_int(t.connects, 1)
+    for _ in range(5) {
+        assert_true(p.run(q("ok")).is_ok())
+    }
+    assert_eq_int(t.connects, 1)
+    assert_eq_int(p.stats().idle, 1)
+}
+
+fun test_concurrent_callers_never_exceed_max_size() {
+    let t = tracker()
+    let p = fake_pool(t, 3)
+    let wg = WaitGroup.new()
+    wg.add(40)
+    for _ in range(40) {
+        spawn {
+            // A statement error keeps the session.
+            // A backend killed by the server is dropped and replaced.
+            hit(p, wg)
+        }
+    }
+    wg.wait()
+    assert_true(t.peak <= 3)
+    assert_true(t.peak >= 2)
+    assert_true(t.connects <= 3)
+    let s = p.stats()
+    assert_eq_int(s.in_use, 0)
+    assert_eq_int(s.open, s.idle)
+}
+
+fun hit(p: Pool[Fake], wg: WaitGroup) {
+    let _ = p.run(q("ok"))
+    wg.done()
+}
+
+fun test_fatal_error_closes_the_connection_and_a_new_one_replaces_it() {
+    let t = tracker()
+    let p = fake_pool(t, 2)
+    assert_true(p.run(q("net")).is_err())
+    assert_eq_int(t.closed, 1)
+    assert_eq_int(p.stats().open, 0)
+    assert_true(p.run(q("ok")).is_ok())
+    assert_eq_int(t.connects, 2)
+}
+
+fun test_statement_error_keeps_the_connection() {
+    let t = tracker()
+    let p = fake_pool(t, 2)
+    assert_true(p.run(q("sql")).is_err())
+    assert_eq_int(t.closed, 0)
+    assert_eq_int(p.stats().idle, 1)
+}
+
+fun test_failed_connect_frees_its_slot() {
+    let t = tracker()
+    let made = pool(
+        1,
+        () => {
+            t.connects = t.connects + 1
+            if t.connects == 1 {
+                return Ok(Fake(id: 1, tracker: t))
+            }
+            return Err(error_kind("net", "refused"))
+        },
+    )
+    let p = match made {
+        case Ok(v) { v }
+        case Err(e) { panic(e.message) }
+    }
+    assert_true(p.run(q("net")).is_err())
+    assert_true(p.run(q("ok")).is_err())
+    assert_true(p.run(q("ok")).is_err())
+    assert_eq_int(p.stats().open, 0)
+}
+
+fun test_shutdown_closes_idle_and_refuses_checkouts() {
+    let t = tracker()
+    let p = fake_pool(t, 2)
+    p.shutdown()
+    assert_eq_int(t.closed, 1)
+    assert_true(p.run(q("ok")).is_err())
+}
+
+fun test_pool_over_sqlite_runs_queries_and_transactions() {
+    let path = "target/pool_test.db"
+    let made = pool(
+        2,
+        () => match SqliteDb.open(path) {
+            case Ok(db) { Ok(sqlite(db)) }
+            case Err(m) { Err(error_kind("sqlite", m)) }
+        },
+    )
+    let p = match made {
+        case Ok(v) { v }
+        case Err(e) { panic(e.message) }
+    }
+    assert_true(p.run(raw_query("DROP TABLE IF EXISTS items", [], [], false)).is_ok())
+    assert_true(p.run(raw_query("CREATE TABLE items (name TEXT)", [], [], false)).is_ok())
+    assert_true(insert_one(p, insert_into("items").value("name", text("a"))).is_ok())
+    let committed = p.transaction(
+        (tx: Sqlite) -> Result[QueryResult, Error] => insert_one(
+            tx,
+            insert_into("items").value("name", text("b")),
+        ),
+    )
+    assert_true(committed.is_ok())
+    let failed = p.transaction(
+        (tx: Sqlite) -> Result[QueryResult, Error] => {
+            let _ = insert_one(tx, insert_into("items").value("name", text("c")))
+            return Err(error_kind("test", "abort"))
+        },
+    )
+    assert_true(failed.is_err())
+    let rows = fetch_all(p, select("items"))
+    assert_true(rows.is_ok())
+    assert_eq_int(rows.unwrap().row_count(), 2)
+    p.shutdown()
+}
+
+fun pg_pool(size: int) -> Pool[Postgres] {
+    let port = match get_env_or("NEST_POSTGRES_PORT", "55433").parse_int() {
+        case Some(p) { p }
+        case None { 55433 }
+    }
+    let made = pool(
+        size,
+        () => match connect_postgres("127.0.0.1", port, "raven", "ravenpw", "ravendb") {
+            case Ok(c) { Ok(postgres(c)) }
+            case Err(e) { Err(e) }
+        },
+    )
+    return match made {
+        case Ok(v) { v }
+        case Err(e) { panic(e.message) }
+    }
+}
+
+fun pg_insert(p: Pool[Postgres], i: int, wg: WaitGroup) {
+    let _ = insert_one(p, insert_into("nest_pool").value("n", integer(i)))
+    wg.done()
+}
+
+fun test_pool_over_postgres_survives_errors_and_killed_backends() {
+    if not has_env("NEST_POSTGRES_E2E") {
+        return
+    }
+    let p = pg_pool(4)
+    assert_true(p.run(raw_query("DROP TABLE IF EXISTS nest_pool", [], [], false)).is_ok())
+    assert_true(
+        p.run(raw_query("CREATE TABLE nest_pool (n BIGINT NOT NULL)", [], [], false)).is_ok(),
+    )
+    let wg = WaitGroup.new()
+    wg.add(50)
+    for i in range(50) {
+        spawn {
+            pg_insert(p, i, wg)
+        }
+    }
+    wg.wait()
+    let count = p.run(raw_query("SELECT count(*) FROM nest_pool", [], ["count"], true))
+    assert_eq_str(count.unwrap().rows[0].get(0), "50")
+    assert_true(p.stats().open <= 4)
+
+    let before = p.stats().open
+    assert_true(p.run(raw_query("SELECT * FROM no_such_table", [], [], true)).is_err())
+    assert_eq_int(p.stats().open, before)
+
+    let killed = p.with(
+        (c: Postgres) -> Result[QueryResult, Error] => c.run(
+            raw_query("SELECT pg_terminate_backend(pg_backend_pid())", [], [], true),
+        ),
+    )
+    assert_true(killed.is_err())
+    assert_eq_int(p.stats().open, before - 1)
+    for _ in range(6) {
+        assert_true(p.run(raw_query("SELECT 1", [], [], true)).is_ok())
+    }
+    p.shutdown()
+}
