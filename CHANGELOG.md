@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3 - 2026-11-23
+
+- A pooled Postgres connection survives an error from the caller's own code, such as a transaction body that returns `Err`. The pool used to close it and reconnect; under load that meant a new server process for every failed checkout.
+
 ## 0.5.2 - 2026-11-23
 
 - Requires raven-postgres 0.4.0, which caches parameterized queries as prepared statements per connection. Every Postgres query Nest runs is parameterized, so repeated queries now skip parsing and can use a generic plan.
