@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-11-23
+
+- `pool(max_size, connect)` from `nest-orm/pool`: a connection pool shared between goroutines. It is an `Executor`, adds `with` and `transaction` on one connection, and replaces a connection whose session ended (network errors, Postgres `FATAL`) while keeping it after an ordinary SQL error.
+- `Executor` gains `close()` and `reusable_after(error)`, both with defaults. The adapters' `close` methods moved into their `Executor` impls.
+
 ## 0.3.1 - 2026-11-22
 
 - Uses raven-mysql and raven-postgres 0.3.1, which report a plain error when the port is not a database server.

@@ -14,14 +14,19 @@ fun postgres(connection: PostgresConnection) -> Postgres {
     return Postgres(connection: connection)
 }
 
-impl Postgres {
+impl Executor for Postgres {
+    fun dialect(self) -> Dialect = Dialect.Postgres
+
     fun close(self) {
         self.connection.close()
     }
-}
 
-impl Executor for Postgres {
-    fun dialect(self) -> Dialect = Dialect.Postgres
+    // An ERROR response ends only the statement; FATAL and PANIC end the
+    // session, and anything else (a protocol or network failure) leaves the
+    // stream in an unknown state.
+    fun reusable_after(self, error: Error) -> bool {
+        return error.kind == "postgres" and error.message.starts_with("ERROR ")
+    }
 
     fun run(self, query: CompiledQuery) -> Result[NestQueryResult, Error] {
         let result = self.connection.query_optional_params(query.sql, query.params)?

@@ -184,6 +184,16 @@ trait Executor {
     fun dialect(self) -> Dialect
 
     fun run(self, query: CompiledQuery) -> Result[QueryResult, Error]
+
+    // Release the connection. Adapters with a socket or handle override this.
+    fun close(self) {}
+
+    // Whether the connection still works after `run` failed with `error`. A
+    // pool closes connections for which this is false. The default treats
+    // network, TLS, and I/O failures as fatal.
+    fun reusable_after(self, error: Error) -> bool {
+        return error.kind != "net" and error.kind != "tls" and error.kind != "io"
+    }
 }
 
 class CompiledQuery {

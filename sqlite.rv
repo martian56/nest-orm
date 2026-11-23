@@ -20,14 +20,14 @@ impl Sqlite {
             case Err(message) { Err(error_kind("sqlite", message)) }
         }
     }
-
-    fun close(self) {
-        let _ = self.try_close()
-    }
 }
 
 impl Executor for Sqlite {
     fun dialect(self) -> Dialect = Dialect.Sqlite
+
+    fun close(self) {
+        let _ = self.try_close()
+    }
 
     fun run(self, query: CompiledQuery) -> Result[NestQueryResult, Error] {
         let statement = prepare_sqlite(self.connection, query.sql)?
