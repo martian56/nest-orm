@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 - 2026-11-23
+
+- Requires raven-postgres 0.4.0, which caches parameterized queries as prepared statements per connection. Every Postgres query Nest runs is parameterized, so repeated queries now skip parsing and can use a generic plan.
+
 ## 0.5.1 - 2026-11-23
 
 - A migration's `up` and `down` SQL may hold several statements. They are split at top-level semicolons (quotes, comments, and `$$` bodies are respected) and run one by one; PostgreSQL rejected several commands in one prepared statement.

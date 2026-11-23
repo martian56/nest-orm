@@ -7,8 +7,8 @@ hash = "sha256:0e65ba69ee31b00f2a76f669cf33cecf0ebecac757264557c2d400a12c9529d1"
 
 [[package]]
 source = "github.com/martian56/raven-postgres"
-version = "v0.3.1"
-hash = "sha256:7450938577fe7080563356c5792b82165660b29afb954703c8efa059b50d961e"
+version = "v0.4.0"
+hash = "sha256:77f3db8dca63e1770b25f0c4a749a0c4e2c7c754fc784fff2b27f636889be008"
 
 [[package]]
 source = "github.com/martian56/raven-sqlite"
