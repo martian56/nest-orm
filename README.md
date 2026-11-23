@@ -144,6 +144,37 @@ MySQL does not support `INSERT ... RETURNING`; Nest reports that combination at
 query compilation, and MySQL-generated ids remain available as
 `last_insert_id`.
 
+## Aggregates, locks, upserts, and more
+
+```rust
+// Aggregates and grouping.
+let revenue = fetch_all(db, select("orders").column("store_id").count_as("orders").sum_as("total_cents", "revenue").group_by("store_id"))?
+let n = count(db, select("products").where_eq("active", boolean(true)))?
+let taken = exists(db, select("users").where_eq("email", text(email)))?
+
+// Typed fetches.
+let user: Option[User] = fetch_one(db, select("users").where_eq("id", integer(id)))?
+let items: list[Item] = fetch_models(db, select("items").where_ilike("name", text("%mug%")).page(2, 20))?
+
+// Row locks inside a transaction, and claiming queue work.
+fetch_all(tx, select("inventory").where_eq("variant_id", integer(v)).for_update())?
+fetch_all(tx, select("jobs").where_eq("state", text("ready")).limit(1).for_update_skip_locked())?
+
+// Atomic counters with a guard, and RETURNING on update and delete.
+update_all(tx, update("inventory").decrement("on_hand", qty).where_eq("variant_id", integer(v)).where_raw("on_hand >= ?", [integer(qty)]).returning("on_hand"))?
+
+// Upserts.
+insert_one(db, insert_into("cart_items").value("cart_id", integer(c)).value("variant_id", integer(v)).value("qty", integer(1)).on_conflict_update(["cart_id", "variant_id"], ["qty"]))?
+```
+
+- `count_as`, `count_column_as`, `sum_as`, `avg_as`, `min_as`, `max_as`, `distinct`, and `group_by` on selects.
+- `for_update`, `for_update_skip_locked`, `for_update_nowait`, and `for_share` on PostgreSQL and MySQL; SQLite reports an error, since it locks the whole database.
+- `where_ilike` matches case-insensitively on every dialect. `where_raw(sql, values)` and `or_where_raw` take a fragment with `?` for each value and always bind the values as parameters.
+- `page(page, per_page)` sets LIMIT and OFFSET.
+- `increment` and `decrement` on updates, and `returning` on updates and deletes, as well as inserts.
+- `on_conflict_do_nothing(columns)` and `on_conflict_update(columns, updates)` on inserts, translated to `ON DUPLICATE KEY UPDATE` on MySQL.
+- `fetch_models`, `fetch_one`, `count`, and `exists`.
+
 ## Transactions
 
 Use `transaction` to commit a successful closure or roll back its error:
@@ -319,7 +350,7 @@ shell script to keep the database containers running after tests.
 
 - Values use the text parameter formats exposed by the three current drivers.
 - Results are collected in memory; streaming cursors are not implemented.
-- Upserts, aggregates, subqueries, relations, eager loading,
+- Subqueries, relations, eager loading,
   and derive-generated model mappings are not implemented yet.
 - Migration SQL is intentionally explicit because column types and many DDL
   operations differ across databases.

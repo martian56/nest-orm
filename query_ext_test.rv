@@ -1,0 +1,215 @@
+from std.env import get_env_or, has_env
+from std.test import assert_eq_int, assert_eq_str, assert_true
+from "github.com/martian56/raven-postgres" import connect as connect_postgres
+from "./lib" import (
+    Dialect,
+    FromRow,
+    QueryResult,
+    Row,
+    count,
+    delete_from,
+    exists,
+    fetch_all,
+    fetch_models,
+    fetch_one,
+    insert_into,
+    insert_one,
+    integer,
+    raw_query,
+    select,
+    text,
+    update,
+    update_all,
+    delete_all,
+)
+from "./pool" import pool
+from "./postgres" import Postgres, postgres
+
+fun sql_of(q: str) -> str = q
+
+fun test_aggregates_distinct_group_and_locks_compile() {
+    let q = select("orders").column("store_id").count_as("n").sum_as("total_cents", "revenue").where_eq(
+        "status",
+        text("paid"),
+    ).group_by("store_id").order_desc("revenue")
+    assert_eq_str(
+        q.compile(Dialect.Postgres).unwrap().sql,
+        "SELECT \"store_id\", COUNT(*) AS \"n\", SUM(\"total_cents\") AS \"revenue\" FROM \"orders\" WHERE \"status\" = $1 GROUP BY \"store_id\" ORDER BY \"revenue\" DESC",
+    )
+    assert_eq_str(
+        select("tags").column("name").distinct().compile(Dialect.Sqlite).unwrap().sql,
+        "SELECT DISTINCT \"name\" FROM \"tags\"",
+    )
+    let locked = select("jobs").where_eq("state", text("ready")).limit(1).for_update_skip_locked()
+    assert_eq_str(
+        locked.compile(Dialect.Postgres).unwrap().sql,
+        "SELECT * FROM \"jobs\" WHERE \"state\" = $1 LIMIT 1 FOR UPDATE SKIP LOCKED",
+    )
+    assert_eq_str(
+        select("t").for_update().compile(Dialect.MySql).unwrap().sql,
+        "SELECT * FROM `t` FOR UPDATE",
+    )
+    assert_true(select("t").for_update().compile(Dialect.Sqlite).is_err())
+}
+
+fun test_ilike_raw_and_page_compile() {
+    let q = select("products").where_ilike("name", text("%mug%")).where_raw(
+        "price_cents BETWEEN ? AND ?",
+        [integer(100), integer(500)],
+    ).page(3, 20)
+    assert_eq_str(
+        q.compile(Dialect.Postgres).unwrap().sql,
+        "SELECT * FROM \"products\" WHERE \"name\" ILIKE $1 AND (price_cents BETWEEN $2 AND $3) LIMIT 20 OFFSET 40",
+    )
+    assert_eq_str(
+        q.compile(Dialect.Sqlite).unwrap().sql,
+        "SELECT * FROM \"products\" WHERE LOWER(\"name\") LIKE LOWER(?) AND (price_cents BETWEEN ? AND ?) LIMIT 20 OFFSET 40",
+    )
+    assert_eq_int(q.compile(Dialect.Postgres).unwrap().params.len(), 3)
+    assert_true(
+        select("t").where_raw("a = ? AND b = ?", [integer(1)]).compile(Dialect.Postgres).is_err(),
+    )
+    assert_true(select("t").where_raw("a = 1", [integer(1)]).compile(Dialect.Postgres).is_err())
+}
+
+fun test_upsert_increment_and_returning_compile() {
+    let up = insert_into("carts").value("user_id", integer(7)).value("qty", integer(2)).on_conflict_update(
+        ["user_id"],
+        ["qty"],
+    ).returning("id")
+    assert_eq_str(
+        up.compile(Dialect.Postgres).unwrap().sql,
+        "INSERT INTO \"carts\" (\"user_id\", \"qty\") VALUES ($1, $2) ON CONFLICT (\"user_id\") DO UPDATE SET \"qty\" = EXCLUDED.\"qty\" RETURNING \"id\"",
+    )
+    assert_eq_str(
+        insert_into("t").value("a", integer(1)).on_conflict_do_nothing(["a"]).compile(
+            Dialect.Sqlite,
+        ).unwrap().sql,
+        "INSERT INTO \"t\" (\"a\") VALUES (?) ON CONFLICT (\"a\") DO NOTHING",
+    )
+    assert_eq_str(
+        insert_into("t").value("a", integer(1)).value("b", integer(2)).on_conflict_update(
+            ["a"],
+            ["b"],
+        ).compile(Dialect.MySql).unwrap().sql,
+        "INSERT INTO `t` (`a`, `b`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `b` = VALUES(`b`)",
+    )
+    let inc = update("inventory").decrement("on_hand", 3).set("updated_at", text("now")).where_eq(
+        "variant_id",
+        integer(9),
+    ).where_raw("on_hand >= ?", [integer(3)]).returning("on_hand")
+    assert_eq_str(
+        inc.compile(Dialect.Postgres).unwrap().sql,
+        "UPDATE \"inventory\" SET \"updated_at\" = $1, \"on_hand\" = \"on_hand\" + $2 WHERE \"variant_id\" = $3 AND (on_hand >= $4) RETURNING \"on_hand\"",
+    )
+    assert_eq_str(
+        update("t").increment("n", 1).compile(Dialect.Sqlite).unwrap().sql,
+        "UPDATE \"t\" SET \"n\" = \"n\" + ?",
+    )
+    assert_eq_str(
+        delete_from("sessions").where_lt("expires_at", integer(5)).returning("id").compile(
+            Dialect.Postgres,
+        ).unwrap().sql,
+        "DELETE FROM \"sessions\" WHERE \"expires_at\" < $1 RETURNING \"id\"",
+    )
+    assert_true(update("t").increment("n", 1).returning("n").compile(Dialect.MySql).is_err())
+}
+
+class Item {
+    id: int
+    name: str
+    qty: int
+}
+
+impl FromRow for Item {
+    fun from_row(row: Row) -> Result[Item, Error] {
+        return Ok(
+            Item(id: row.int_named("id")?, name: row.required("name")?, qty: row.int_named("qty")?),
+        )
+    }
+}
+
+fun test_postgres_extensions_end_to_end() {
+    if not has_env("NEST_POSTGRES_E2E") {
+        return
+    }
+    let port = get_env_or("NEST_POSTGRES_PORT", "55433").parse_int().unwrap_or(55433)
+    let db = pool(
+        3,
+        () => match connect_postgres("127.0.0.1", port, "raven", "ravenpw", "ravendb") {
+            case Ok(c) { Ok(postgres(c)) }
+            case Err(e) { Err(e) }
+        },
+    ).unwrap()
+    db.run(raw_query("DROP TABLE IF EXISTS nest_items", [], [], false)).unwrap()
+    db.run(
+        raw_query(
+            "CREATE TABLE nest_items (id BIGSERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, qty BIGINT NOT NULL)",
+            [],
+            [],
+            false,
+        ),
+    ).unwrap()
+    for n in ["Mug", "mug lid", "Plate"] {
+        insert_one(db, insert_into("nest_items").value("name", text(n)).value("qty", integer(5))).unwrap()
+    }
+    // Upsert and do-nothing.
+    let up = insert_one(
+        db,
+        insert_into("nest_items").value("name", text("Mug")).value("qty", integer(9)).on_conflict_update(
+            ["name"],
+            ["qty"],
+        ).returning("qty"),
+    ).unwrap()
+    assert_eq_str(up.rows[0].get(0), "9")
+    let skipped = insert_one(
+        db,
+        insert_into("nest_items").value("name", text("Plate")).value("qty", integer(1)).on_conflict_do_nothing(
+            ["name"],
+        ),
+    ).unwrap()
+    assert_eq_int(skipped.affected, 0)
+    // Increment with a guard and RETURNING.
+    let dec = update_all(
+        db,
+        update("nest_items").decrement("qty", 4).where_eq("name", text("Plate")).where_raw(
+            "qty >= ?",
+            [integer(4)],
+        ).returning("qty"),
+    ).unwrap()
+    assert_eq_str(dec.rows[0].get(0), "1")
+    let refused = update_all(
+        db,
+        update("nest_items").decrement("qty", 4).where_eq("name", text("Plate")).where_raw(
+            "qty >= ?",
+            [integer(4)],
+        ),
+    ).unwrap()
+    assert_eq_int(refused.affected, 0)
+    // Case-insensitive search, count, exists, models, aggregates.
+    let mugs: list[Item] = fetch_models(
+        db,
+        select("nest_items").where_ilike("name", text("%MUG%")).order_asc("id"),
+    ).unwrap()
+    assert_eq_int(mugs.len(), 2)
+    assert_eq_int(count(db, select("nest_items").where_gt("qty", integer(1))).unwrap(), 2)
+    assert_true(exists(db, select("nest_items").where_eq("name", text("mug lid"))).unwrap())
+    let none: Option[Item] = fetch_one(db, select("nest_items").where_eq("name", text("nope"))).unwrap()
+    assert_true(none.is_none())
+    let total = fetch_all(db, select("nest_items").sum_as("qty", "total")).unwrap()
+    assert_eq_str(total.rows[0].get(0), "15")
+    // A row lock inside a transaction.
+    let locked = db.transaction(
+        (tx: Postgres) -> Result[QueryResult, Error] => fetch_all(
+            tx,
+            select("nest_items").where_eq("name", text("Mug")).for_update_skip_locked(),
+        ),
+    )
+    assert_eq_int(locked.unwrap().rows.len(), 1)
+    let gone = delete_all(
+        db,
+        delete_from("nest_items").where_in("name", [text("Mug"), text("Plate")]).returning("name"),
+    ).unwrap()
+    assert_eq_int(gone.rows.len(), 2)
+    db.shutdown()
+}

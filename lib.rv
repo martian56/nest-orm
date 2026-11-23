@@ -215,6 +215,8 @@ fun raw_query(
 class SelectField {
     name: str
     alias: Option[str]
+    // An aggregate such as COUNT or SUM applied to `name` ("" for a plain column).
+    function: str
 }
 
 class Condition {
@@ -245,6 +247,9 @@ class SelectQuery {
     orderings: list[Ordering]
     limit_value: Option[int]
     offset_value: Option[int]
+    distinct_rows: bool
+    group_columns: list[str]
+    lock: str
 }
 
 fun select(table: str) -> SelectQuery {
@@ -260,17 +265,103 @@ fun select(table: str) -> SelectQuery {
         orderings: orderings,
         limit_value: None,
         offset_value: None,
+        distinct_rows: false,
+        group_columns: [],
+        lock: "",
     )
 }
 
 impl SelectQuery {
+    // `COUNT(*) AS alias`, or a count of one column with `count_column_as`.
+    fun count_as(self, alias: str) -> SelectQuery = self._aggregate("COUNT", "*", alias)
+
+    fun count_column_as(self, column: str, alias: str) -> SelectQuery = self._aggregate(
+        "COUNT",
+        column,
+        alias,
+    )
+
+    fun sum_as(self, column: str, alias: str) -> SelectQuery = self._aggregate("SUM", column, alias)
+
+    fun avg_as(self, column: str, alias: str) -> SelectQuery = self._aggregate("AVG", column, alias)
+
+    fun min_as(self, column: str, alias: str) -> SelectQuery = self._aggregate("MIN", column, alias)
+
+    fun max_as(self, column: str, alias: str) -> SelectQuery = self._aggregate("MAX", column, alias)
+
+    fun _aggregate(self, function: str, column: str, alias: str) -> SelectQuery {
+        self.fields.push(SelectField(name: column, alias: Some(alias), function: function))
+        return self
+    }
+
+    fun distinct(self) -> SelectQuery {
+        self.distinct_rows = true
+        return self
+    }
+
+    fun group_by(self, column: str) -> SelectQuery {
+        self.group_columns.push(column)
+        return self
+    }
+
+    // Lock the selected rows until the transaction ends (PostgreSQL, MySQL).
+    fun for_update(self) -> SelectQuery {
+        self.lock = "FOR UPDATE"
+        return self
+    }
+
+    // Lock the selected rows, skipping rows another transaction has locked:
+    // the way to claim work from a queue table.
+    fun for_update_skip_locked(self) -> SelectQuery {
+        self.lock = "FOR UPDATE SKIP LOCKED"
+        return self
+    }
+
+    // Lock the selected rows, failing at once if any is already locked.
+    fun for_update_nowait(self) -> SelectQuery {
+        self.lock = "FOR UPDATE NOWAIT"
+        return self
+    }
+
+    // A shared lock: other transactions can read but not change the rows.
+    fun for_share(self) -> SelectQuery {
+        self.lock = "FOR SHARE"
+        return self
+    }
+
+    // Case-insensitive LIKE (ILIKE on PostgreSQL, LOWER(...) LIKE LOWER(...)
+    // elsewhere).
+    fun where_ilike(self, column: str, pattern: Value) -> SelectQuery {
+        self.conditions.push(value_condition("AND", column, "ILIKE", pattern))
+        return self
+    }
+
+    // A raw SQL condition with `?` for each value, ANDed with the others:
+    // `where_raw("price_cents BETWEEN ? AND ?", [integer(100), integer(500)])`.
+    // The values are always bound as parameters.
+    fun where_raw(self, sql: str, values: list[Value]) -> SelectQuery {
+        self.conditions.push(raw_condition("AND", sql, values))
+        return self
+    }
+
+    fun or_where_raw(self, sql: str, values: list[Value]) -> SelectQuery {
+        self.conditions.push(raw_condition("OR", sql, values))
+        return self
+    }
+
+    // Page `page` (from 1) of `per_page` rows.
+    fun page(self, page: int, per_page: int) -> SelectQuery {
+        let p = page if page > 0 else 1
+        return self.limit(per_page).offset((p - 1) * per_page)
+    }
+
     fun column(self, name: str) -> SelectQuery {
-        self.fields.push(SelectField(name: name, alias: None))
+        self.fields.push(SelectField(name: name, alias: None, function: ""))
         return self
     }
 
     fun column_as(self, name: str, alias: str) -> SelectQuery {
-        self.fields.push(SelectField(name: name, alias: Some(alias)))
+        self.fields.push(SelectField(name: name, alias: Some(alias), function: ""))
         return self
     }
 
@@ -365,7 +456,7 @@ impl SelectQuery {
     }
 
     fun compile(self, dialect: Dialect) -> Result[CompiledQuery, Error] {
-        var sql = "SELECT "
+        var sql = "SELECT DISTINCT " if self.distinct_rows else "SELECT "
         let columns: list[str] = []
         if self.fields.len() == 0 {
             sql = sql.concat("*")
@@ -376,7 +467,12 @@ impl SelectQuery {
                     sql = sql.concat(", ")
                 }
                 let field = self.fields[i]
-                sql = sql.concat(quote_identifier(field.name, dialect)?)
+                if field.function != "" {
+                    let target = "*" if field.name == "*" else quote_identifier(field.name, dialect)?
+                    sql = sql.concat("${field.function}(${target})")
+                } else {
+                    sql = sql.concat(quote_identifier(field.name, dialect)?)
+                }
                 match field.alias {
                     case Some(alias) {
                         sql = sql.concat(" AS ").concat(quote_identifier(alias, dialect)?)
@@ -396,6 +492,17 @@ impl SelectQuery {
         }
         let compiled_conditions = compile_conditions(self.conditions, dialect, 1)?
         sql = sql.concat(compiled_conditions.sql)
+        if self.group_columns.len() > 0 {
+            sql = sql.concat(" GROUP BY ")
+            var g = 0
+            while g < self.group_columns.len() {
+                if g > 0 {
+                    sql = sql.concat(", ")
+                }
+                sql = sql.concat(quote_identifier(self.group_columns[g], dialect)?)
+                g = g + 1
+            }
+        }
         if self.orderings.len() > 0 {
             sql = sql.concat(" ORDER BY ")
             var i = 0
@@ -438,6 +545,20 @@ impl SelectQuery {
             }
             case None {}
         }
+        if self.lock != "" {
+            match dialect {
+                case Sqlite {
+                    return Err(
+                        error_kind(
+                            "nest",
+                            "SQLite does not support row locks; it locks the whole database in a write transaction",
+                        ),
+                    )
+                }
+                case _ {}
+            }
+            sql = sql.concat(" ${self.lock}")
+        }
         return Ok(
             CompiledQuery(
                 sql: sql,
@@ -458,15 +579,42 @@ class InsertQuery {
     table: str
     values: list[Assignment]
     returning: list[str]
+    // "" (none), "nothing", or "update" for an upsert on `conflict_columns`.
+    conflict_action: str
+    conflict_columns: list[str]
+    conflict_updates: list[str]
 }
 
 fun insert_into(table: str) -> InsertQuery {
     let values: list[Assignment] = []
     let returning: list[str] = []
-    return InsertQuery(table: table, values: values, returning: returning)
+    return InsertQuery(
+        table: table,
+        values: values,
+        returning: returning,
+        conflict_action: "",
+        conflict_columns: [],
+        conflict_updates: [],
+    )
 }
 
 impl InsertQuery {
+    // Skip the insert when it would violate a unique constraint on `columns`.
+    fun on_conflict_do_nothing(self, columns: list[str]) -> InsertQuery {
+        self.conflict_action = "nothing"
+        self.conflict_columns = columns
+        return self
+    }
+
+    // Upsert: when a row with the same `columns` exists, overwrite `updates`
+    // with this insert's values instead.
+    fun on_conflict_update(self, columns: list[str], updates: list[str]) -> InsertQuery {
+        self.conflict_action = "update"
+        self.conflict_columns = columns
+        self.conflict_updates = updates
+        return self
+    }
+
     fun value(self, column: str, value: Value) -> InsertQuery {
         self.values.push(Assignment(column: column, value: value))
         return self
@@ -505,6 +653,9 @@ impl InsertQuery {
             i = i + 1
         }
         sql = sql.concat(")")
+        if self.conflict_action != "" {
+            sql = sql.concat(compile_conflict(self, dialect)?)
+        }
         let columns: list[str] = []
         var returns_rows = false
         if self.returning.len() > 0 {
@@ -538,15 +689,69 @@ class UpdateQuery {
     table: str
     assignments: list[Assignment]
     conditions: list[Condition]
+    increments: list[Assignment]
+    returning: list[str]
 }
 
 fun update(table: str) -> UpdateQuery {
     let assignments: list[Assignment] = []
     let conditions: list[Condition] = []
-    return UpdateQuery(table: table, assignments: assignments, conditions: conditions)
+    let increments: list[Assignment] = []
+    return UpdateQuery(
+        table: table,
+        assignments: assignments,
+        conditions: conditions,
+        increments: increments,
+        returning: [],
+    )
 }
 
 impl UpdateQuery {
+    // `column = column + by`, done by the database so concurrent updates do
+    // not lose each other's changes.
+    fun increment(self, column: str, by: int) -> UpdateQuery {
+        self.increments.push(Assignment(column: column, value: Value.Integer(by)))
+        return self
+    }
+
+    fun decrement(self, column: str, by: int) -> UpdateQuery = self.increment(column, 0 - by)
+
+    fun where_not_eq(self, column: str, value: Value) -> UpdateQuery {
+        self.conditions.push(value_condition("AND", column, "<>", value))
+        return self
+    }
+
+    fun where_gt(self, column: str, value: Value) -> UpdateQuery {
+        self.conditions.push(value_condition("AND", column, ">", value))
+        return self
+    }
+
+    fun where_gte(self, column: str, value: Value) -> UpdateQuery {
+        self.conditions.push(value_condition("AND", column, ">=", value))
+        return self
+    }
+
+    fun where_lt(self, column: str, value: Value) -> UpdateQuery {
+        self.conditions.push(value_condition("AND", column, "<", value))
+        return self
+    }
+
+    fun where_in(self, column: str, values: list[Value]) -> UpdateQuery {
+        self.conditions.push(in_condition("AND", column, "IN", values))
+        return self
+    }
+
+    fun where_raw(self, sql: str, values: list[Value]) -> UpdateQuery {
+        self.conditions.push(raw_condition("AND", sql, values))
+        return self
+    }
+
+    // Return these columns of each updated row (PostgreSQL, SQLite).
+    fun returning(self, column: str) -> UpdateQuery {
+        self.returning.push(column)
+        return self
+    }
+
     fun set(self, column: str, value: Value) -> UpdateQuery {
         self.assignments.push(Assignment(column: column, value: value))
         return self
@@ -563,7 +768,7 @@ impl UpdateQuery {
     }
 
     fun compile(self, dialect: Dialect) -> Result[CompiledQuery, Error] {
-        if self.assignments.len() == 0 {
+        if self.assignments.len() == 0 and self.increments.len() == 0 {
             return Err(error_kind("nest", "update requires at least one assignment"))
         }
         var sql = "UPDATE ".concat(quote_identifier(self.table, dialect)?).concat(" SET ")
@@ -578,31 +783,64 @@ impl UpdateQuery {
             params.push(self.assignments[i].value.parameter())
             i = i + 1
         }
-        let compiled_conditions = compile_conditions(
-            self.conditions,
-            dialect,
-            self.assignments.len() + 1,
-        )?
+        for inc in self.increments {
+            if params.len() > 0 {
+                sql = sql.concat(", ")
+            }
+            let col = quote_identifier(inc.column, dialect)?
+            sql = sql.concat("${col} = ${col} + ").concat(dialect.placeholder(params.len() + 1))
+            params.push(inc.value.parameter())
+        }
+        let compiled_conditions = compile_conditions(self.conditions, dialect, params.len() + 1)?
         sql = sql.concat(compiled_conditions.sql)
         for param in compiled_conditions.params {
             params.push(param)
         }
-        let columns: list[str] = []
-        return Ok(CompiledQuery(sql: sql, params: params, columns: columns, returns_rows: false))
+        let returned = compile_returning(self.returning, dialect)?
+        sql = sql.concat(returned.sql)
+        return Ok(
+            CompiledQuery(
+                sql: sql,
+                params: params,
+                columns: returned.columns,
+                returns_rows: returned.columns.len() > 0,
+            ),
+        )
     }
 }
 
 class DeleteQuery {
     table: str
     conditions: list[Condition]
+    returning: list[str]
 }
 
 fun delete_from(table: str) -> DeleteQuery {
     let conditions: list[Condition] = []
-    return DeleteQuery(table: table, conditions: conditions)
+    return DeleteQuery(table: table, conditions: conditions, returning: [])
 }
 
 impl DeleteQuery {
+    fun where_in(self, column: str, values: list[Value]) -> DeleteQuery {
+        self.conditions.push(in_condition("AND", column, "IN", values))
+        return self
+    }
+
+    fun where_lt(self, column: str, value: Value) -> DeleteQuery {
+        self.conditions.push(value_condition("AND", column, "<", value))
+        return self
+    }
+
+    fun where_raw(self, sql: str, values: list[Value]) -> DeleteQuery {
+        self.conditions.push(raw_condition("AND", sql, values))
+        return self
+    }
+
+    fun returning(self, column: str) -> DeleteQuery {
+        self.returning.push(column)
+        return self
+    }
+
     fun where_eq(self, column: str, value: Value) -> DeleteQuery {
         self.conditions.push(value_condition("AND", column, "=", value))
         return self
@@ -617,13 +855,14 @@ impl DeleteQuery {
         var sql = "DELETE FROM ".concat(quote_identifier(self.table, dialect)?)
         let compiled_conditions = compile_conditions(self.conditions, dialect, 1)?
         sql = sql.concat(compiled_conditions.sql)
-        let columns: list[str] = []
+        let returned = compile_returning(self.returning, dialect)?
+        sql = sql.concat(returned.sql)
         return Ok(
             CompiledQuery(
                 sql: sql,
                 params: compiled_conditions.params,
-                columns: columns,
-                returns_rows: false,
+                columns: returned.columns,
+                returns_rows: returned.columns.len() > 0,
             ),
         )
     }
@@ -710,6 +949,43 @@ fun compile_conditions(
                 sql = sql.concat("1 = 0")
             } else {
                 sql = sql.concat("1 = 1")
+            }
+        } else if condition.operator == "RAW" {
+            // A raw fragment with `?` placeholders, numbered for the dialect.
+            var fragment = ""
+            var k = 0
+            var next = 0
+            let text = condition.column
+            while k < text.length() {
+                let ch = text.substring(k, k + 1)
+                if ch == "?" {
+                    if next >= condition.values.len() {
+                        return Err(error_kind("nest", "where_raw has more ? placeholders than values"))
+                    }
+                    fragment = fragment.concat(dialect.placeholder(start_index + params.len()))
+                    params.push(condition.values[next].parameter())
+                    next = next + 1
+                } else {
+                    fragment = fragment.concat(ch)
+                }
+                k = k + 1
+            }
+            if next != condition.values.len() {
+                return Err(error_kind("nest", "where_raw has more values than ? placeholders"))
+            }
+            sql = sql.concat("(${fragment})")
+        } else if condition.operator == "ILIKE" {
+            let col = quote_identifier(condition.column, dialect)?
+            let ph = dialect.placeholder(start_index + params.len())
+            sql = match dialect {
+                case Postgres { sql.concat("${col} ILIKE ${ph}") }
+                case _ { sql.concat("LOWER(${col}) LIKE LOWER(${ph})") }
+            }
+            match condition.value {
+                case Some(value) { params.push(value.parameter()) }
+                case None {
+                    return Err(error_kind("nest", "where_ilike needs a value"))
+                }
             }
         } else {
             sql = sql.concat(quote_identifier(condition.column, dialect)?)
@@ -857,4 +1133,132 @@ fun transaction[T: Executor, R](executor: T, body: fun(T) -> Result[R, Error]) -
             Err(error)
         }
     }
+}
+
+fun raw_condition(connector: str, sql: str, values: list[Value]) -> Condition {
+    return Condition(
+        connector: connector,
+        column: sql,
+        operator: "RAW",
+        value: None,
+        values: values,
+    )
+}
+
+class Returning {
+    sql: str
+    columns: list[str]
+}
+
+fun compile_returning(returning: list[str], dialect: Dialect) -> Result[Returning, Error] {
+    let columns: list[str] = []
+    if returning.len() == 0 {
+        return Ok(Returning(sql: "", columns: columns))
+    }
+    match dialect {
+        case MySql {
+            return Err(error_kind("nest", "MySQL does not support RETURNING"))
+        }
+        case _ {}
+    }
+    var sql = " RETURNING "
+    var r = 0
+    while r < returning.len() {
+        if r > 0 {
+            sql = sql.concat(", ")
+        }
+        sql = sql.concat(quote_identifier(returning[r], dialect)?)
+        columns.push(last_identifier_segment(returning[r]))
+        r = r + 1
+    }
+    return Ok(Returning(sql: sql, columns: columns))
+}
+
+fun compile_conflict(q: InsertQuery, dialect: Dialect) -> Result[str, Error] {
+    let quoted: list[str] = []
+    for c in q.conflict_columns {
+        quoted.push(quote_identifier(c, dialect)?)
+    }
+    let updates: list[str] = []
+    for c in q.conflict_updates {
+        let col = quote_identifier(c, dialect)?
+        updates.push(
+            match dialect {
+                case MySql { "${col} = VALUES(${col})" }
+                case _ { "${col} = EXCLUDED.${col}" }
+            },
+        )
+    }
+    return match dialect {
+        case MySql {
+            if q.conflict_action == "nothing" {
+                // A no-op assignment keeps the existing row, as DO NOTHING does.
+                let first = quote_identifier(q.values[0].column, dialect)?
+                Ok(" ON DUPLICATE KEY UPDATE ${first} = ${first}")
+            } else {
+                Ok(" ON DUPLICATE KEY UPDATE ".concat(", ".join(updates)))
+            }
+        }
+        case _ {
+            if quoted.len() == 0 {
+                return Err(error_kind("nest", "an upsert needs the conflict columns"))
+            }
+            let target = " ON CONFLICT (".concat(", ".join(quoted)).concat(")")
+            if q.conflict_action == "nothing" {
+                Ok(target.concat(" DO NOTHING"))
+            } else if updates.len() == 0 {
+                Err(error_kind("nest", "on_conflict_update needs at least one column to update"))
+            } else {
+                Ok(target.concat(" DO UPDATE SET ").concat(", ".join(updates)))
+            }
+        }
+    }
+}
+
+// Run `query` and decode every row into a `T`.
+fun fetch_models[E: Executor, T: FromRow](
+    executor: E,
+    query: SelectQuery,
+) -> Result[list[T], Error] {
+    return map_rows(fetch_all(executor, query)?)
+}
+
+// Run `query` with LIMIT 1 and decode the row, or None when there is none.
+fun fetch_one[E: Executor, T: FromRow](
+    executor: E,
+    query: SelectQuery,
+) -> Result[Option[T], Error] {
+    let result = fetch_all(executor, query.limit(1))?
+    if result.rows.len() == 0 {
+        return Ok(None)
+    }
+    let model: T = T.from_row(result.rows[0])?
+    return Ok(Some(model))
+}
+
+// The number of rows `query` matches.
+fun count[E: Executor](executor: E, query: SelectQuery) -> Result[int, Error] {
+    let counted = SelectQuery(
+        table: query.table,
+        fields: [],
+        joins: query.joins,
+        conditions: query.conditions,
+        orderings: [],
+        limit_value: None,
+        offset_value: None,
+        distinct_rows: false,
+        group_columns: [],
+        lock: "",
+    )
+    let result = fetch_all(executor, counted.count_as("count"))?
+    if result.rows.len() == 0 {
+        return Ok(0)
+    }
+    return result.rows[0].int_named("count")
+}
+
+// Whether `query` matches any row.
+fun exists[E: Executor](executor: E, query: SelectQuery) -> Result[bool, Error] {
+    let result = fetch_all(executor, query.limit(1))?
+    return Ok(result.rows.len() > 0)
 }
