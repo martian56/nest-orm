@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-11-23
+
+- Aggregates (`count_as`, `sum_as`, `avg_as`, `min_as`, `max_as`), `distinct`, and `group_by` on selects.
+- Row locks: `for_update`, `for_update_skip_locked`, `for_update_nowait`, and `for_share`.
+- `where_ilike`, `where_raw` and `or_where_raw` with bound `?` values, and `page(page, per_page)`.
+- Upserts with `on_conflict_do_nothing` and `on_conflict_update`; `increment` and `decrement` on updates; `returning` on updates and deletes.
+- More conditions on updates and deletes (`where_in`, `where_gt`, `where_raw`, and others).
+- `fetch_models`, `fetch_one`, `count`, and `exists`.
+
 ## 0.4.0 - 2026-11-23
 
 - `pool(max_size, connect)` from `nest-orm/pool`: a connection pool shared between goroutines. It is an `Executor`, adds `with` and `transaction` on one connection, and replaces a connection whose session ended (network errors, Postgres `FATAL`) while keeping it after an ordinary SQL error.
