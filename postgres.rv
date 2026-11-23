@@ -22,10 +22,14 @@ impl Executor for Postgres {
     }
 
     // An ERROR response ends only the statement; FATAL and PANIC end the
-    // session, and anything else (a protocol or network failure) leaves the
-    // stream in an unknown state.
+    // session, and a protocol or network failure leaves the stream in an
+    // unknown state. An error from the caller's own code (a transaction body
+    // that gave up) says nothing about the connection.
     fun reusable_after(self, error: Error) -> bool {
-        return error.kind == "postgres" and error.message.starts_with("ERROR ")
+        if error.kind == "postgres" {
+            return error.message.starts_with("ERROR ")
+        }
+        return error.kind != "net" and error.kind != "tls" and error.kind != "io"
     }
 
     fun run(self, query: CompiledQuery) -> Result[NestQueryResult, Error] {

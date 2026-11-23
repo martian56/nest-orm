@@ -276,6 +276,26 @@ fun test_pool_over_postgres_survives_errors_and_killed_backends() {
     p.shutdown()
 }
 
+fun backend_pid(p: Pool[Postgres]) -> str {
+    let r = p.run(raw_query("SELECT pg_backend_pid()", [], ["pid"], true))
+    return r.unwrap().rows[0].get(0)
+}
+
+fun test_application_error_in_a_postgres_transaction_keeps_the_connection() {
+    if not has_env("NEST_POSTGRES_E2E") {
+        return
+    }
+    let p = pg_pool(1)
+    let pid = backend_pid(p)
+    let failed = p.transaction(
+        (c: Postgres) -> Result[int, Error] => Err(error_kind("checkout", "out of stock")),
+    )
+    assert_true(failed.is_err())
+    assert_eq_int(p.stats().open, 1)
+    assert_eq_str(backend_pid(p), pid)
+    p.shutdown()
+}
+
 fun test_transaction_helpers_refuse_a_pool_and_pool_migrate_works() {
     let path = "target/pool_tx_test.db"
     let p = pool(
