@@ -16,8 +16,10 @@ from "./lib" import (
     raw_query,
     select,
     text,
+    transaction,
 )
 from "./pool" import Pool, pool
+from "./migrations" import migrate, migration
 from "./postgres" import Postgres, postgres
 from "./sqlite" import Sqlite, sqlite
 
@@ -271,5 +273,34 @@ fun test_pool_over_postgres_survives_errors_and_killed_backends() {
     for _ in range(6) {
         assert_true(p.run(raw_query("SELECT 1", [], [], true)).is_ok())
     }
+    p.shutdown()
+}
+
+fun test_transaction_helpers_refuse_a_pool_and_pool_migrate_works() {
+    let path = "target/pool_tx_test.db"
+    let p = pool(
+        2,
+        () => match SqliteDb.open(path) {
+            case Ok(db) { Ok(sqlite(db)) }
+            case Err(m) { Err(error_kind("sqlite", m)) }
+        },
+    ).unwrap()
+    let direct = transaction(
+        p,
+        (tx: Pool[Sqlite]) -> Result[QueryResult, Error] => tx.run(
+            raw_query("SELECT 1", [], [], true),
+        ),
+    )
+    assert_true(direct.is_err())
+    assert_true(direct.unwrap_err().message.contains("one connection"))
+    assert_true(migrate(p, []).is_err())
+    let ms = [
+        migration(1, "two tables").up(
+            "DROP TABLE IF EXISTS pa; DROP TABLE IF EXISTS pb; CREATE TABLE pa (x INT); CREATE TABLE pb (y INT);",
+        ),
+    ]
+    p.run(raw_query("DROP TABLE IF EXISTS nest_migrations", [], [], false)).unwrap()
+    assert_eq_int(p.migrate(ms).unwrap().applied.len(), 1)
+    assert_true(p.run(raw_query("SELECT * FROM pb", [], [], true)).is_ok())
     p.shutdown()
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 - 2026-11-23
+
+- A migration's `up` and `down` SQL may hold several statements. They are split at top-level semicolons (quotes, comments, and `$$` bodies are respected) and run one by one; PostgreSQL rejected several commands in one prepared statement.
+- `begin`, `transaction`, `migrate`, and `rollback_last` refuse a pool, which would have run BEGIN on one connection and the statements on another. Use `pool.transaction`, `pool.with`, or the new `pool.migrate`. Adapters gain `Executor.spreads_connections()` (default false).
+
 ## 0.5.0 - 2026-11-23
 
 - Aggregates (`count_as`, `sum_as`, `avg_as`, `min_as`, `max_as`), `distinct`, and `group_by` on selects.

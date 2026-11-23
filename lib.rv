@@ -194,6 +194,26 @@ trait Executor {
     fun reusable_after(self, error: Error) -> bool {
         return error.kind != "net" and error.kind != "tls" and error.kind != "io"
     }
+
+    // Whether successive `run` calls may land on different connections, as
+    // with a pool. Transaction control needs one connection, so it refuses
+    // such an executor instead of silently running BEGIN on one connection
+    // and the statements on another.
+    fun spreads_connections(self) -> bool {
+        return false
+    }
+}
+
+fun _single_connection[T: Executor](executor: T, what: str) -> Result[bool, Error] {
+    if executor.spreads_connections() {
+        return Err(
+            error_kind(
+                "nest",
+                "${what} needs one connection; use pool.transaction(...), pool.with(...), or pool.migrate(...)",
+            ),
+        )
+    }
+    return Ok(true)
 }
 
 class CompiledQuery {
@@ -1107,6 +1127,7 @@ fun empty_column_list() -> list[str] {
 // Transaction control. BEGIN, COMMIT, and ROLLBACK are accepted by all three
 // bundled dialects (MySQL treats BEGIN as START TRANSACTION).
 fun begin[T: Executor](executor: T) -> Result[QueryResult, Error] {
+    _single_connection(executor, "begin")?
     return executor.run(raw_query("BEGIN", empty_param_list(), empty_column_list(), false))
 }
 
@@ -1122,6 +1143,7 @@ fun rollback[T: Executor](executor: T) -> Result[QueryResult, Error] {
 // (the original error is preserved). The rollback is best effort, so a failed
 // body still surfaces its own error rather than a rollback error.
 fun transaction[T: Executor, R](executor: T, body: fun(T) -> Result[R, Error]) -> Result[R, Error] {
+    _single_connection(executor, "transaction")?
     begin(executor)?
     return match body(executor) {
         case Ok(value) {

@@ -222,6 +222,10 @@ the query on one pooled connection. Use `db.transaction(body)` or
 `db.with(body)` when several statements must share a connection. Share one
 pool between goroutines: callers wait while all connections are in use.
 
+Transactions and migrations need one connection, so use `db.transaction(body)`
+and `db.migrate(migrations)` on a pool; the free `transaction`, `begin`, and
+`migrate` functions refuse one.
+
 `pool` opens one connection immediately, so a wrong address or password fails
 at startup. A connection that fails in a way that ends its session (a network
 error, or a Postgres `FATAL`) is closed instead of reused, and a replacement
